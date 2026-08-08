@@ -345,6 +345,10 @@ function matchStateLabel(value: boolean | null): string {
 }
 
 export function App() {
+  const extensionVersion =
+    typeof chrome !== "undefined" && chrome.runtime?.getManifest
+      ? chrome.runtime.getManifest().version
+      : "Unavailable";
   const [phase, setPhase] = useState<PopupPhase>("loading");
   const [tab, setTab] = useState<TabSummary | null>(null);
   const [monitor, setMonitor] = useState<TabMonitor | null>(null);
@@ -1273,7 +1277,7 @@ export function App() {
       <img src="/icons/icon-48.png" width="30" height="30" alt="" />
       <div className="brand-copy">
         <h1>Lucky Fetch</h1>
-        <p>v{typeof chrome !== "undefined" ? chrome.runtime.getManifest().version : "0.2.0"} <span aria-hidden="true">·</span> Reliable reloads, tab by tab</p>
+        <p>v{extensionVersion} <span aria-hidden="true">·</span> Reliable reloads, tab by tab</p>
       </div>
       {phase === "ready" && (
         <div className="header-actions">
@@ -1829,6 +1833,45 @@ export function App() {
               Reset all
             </button>
           </div>
+
+          <section className="settings-group about-card" aria-labelledby="about-heading">
+            <div className="about-brand">
+              <img src="/icons/icon-48.png" width="38" height="38" alt="LuckyFetch logo" />
+              <div>
+                <strong id="about-heading">LuckyFetch</strong>
+                <span>Version {extensionVersion}</span>
+                <small>Built by Helios Lab</small>
+              </div>
+            </div>
+            <p>
+              A lightweight browser extension for automatic tab refreshing and
+              webpage monitoring.
+            </p>
+            <div className="about-actions" aria-label="LuckyFetch links">
+              <a
+                href="https://github.com/Bourbaki101/Lucky-Fetch.git"
+                target="_blank"
+                rel="noreferrer"
+              >
+                GitHub Repository
+              </a>
+              <a
+                href="https://github.com/Bourbaki101/Lucky-Fetch/issues"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Report an Issue
+              </a>
+              <button
+                type="button"
+                disabled
+                title="Privacy Policy coming soon"
+              >
+                Privacy Policy
+              </button>
+            </div>
+            <footer>© 2026 Helios Lab</footer>
+          </section>
         </section>
       )}
 
@@ -2225,7 +2268,7 @@ export function App() {
             className="text-input"
             type="text"
             value={notificationMessage}
-            placeholder="New ticket"
+            placeholder="Ding! Something changed"
             autoComplete="off"
             onChange={(event) => setNotificationMessage(event.target.value)}
           />

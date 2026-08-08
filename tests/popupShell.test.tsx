@@ -64,4 +64,19 @@ describe("popup shell", () => {
     expect(source).not.toContain('className="site-access-card"');
     expect(source).not.toContain("Ready to configure");
   });
+
+  it("includes compact About details with a manifest-driven version", () => {
+    const source = readFileSync(
+      new URL("../src/popup/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain("chrome.runtime.getManifest().version");
+    expect(source).toContain("Built by Helios Lab");
+    expect(source).toContain("GitHub Repository");
+    expect(source).toContain("Report an Issue");
+    expect(source).toContain("Privacy Policy");
+    expect(source).toContain("© 2026 Helios Lab");
+    expect(source).toContain('placeholder="Ding! Something changed"');
+  });
 });

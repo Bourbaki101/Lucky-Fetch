@@ -1,11 +1,11 @@
 # LuckyFetch
 
-LuckyFetch is a local-first Chromium extension that automatically reloads selected tabs on independent schedules and can watch visible page text for multiple keywords or phrases. Phase 1 provides the reliable reloader foundation for Chrome and Microsoft Edge; Phase 2A adds local transition-based keyword monitoring, and Phase 2B.1 adds match-any keyword lists and optional safe highlighting. It has no backend, analytics, telemetry, remote code, or external services.
+LuckyFetch is a local-first Chromium extension that automatically reloads selected tabs on independent schedules and can watch visible page text for multiple keywords or phrases. It provides the reliable reloader foundation for Chrome and Edge; Adds local transition-based keyword monitoring, match-any keyword lists and optional safe highlighting. It has no backend, analytics, telemetry, remote code, or external services.
 
 ## Phase 1
 
 - Independent configuration and state for every monitored tab
-- Custom intervals from 30 seconds to 30 days, plus 30-second, 1-minute, 5-minute, and 15-minute presets
+- Custom intervals from 30 seconds to 30 days, as if, lol. Plus 30-second, 1-minute, 5-minute, and 15-minute presets
 - Start, Pause, Resume, Stop, and Reload Now controls
 - Optional reload limit with a visible Completed state
 - Optional cache bypass
@@ -45,7 +45,7 @@ The Phase 1 boundary and later ideas are in [PRODUCT.md](PRODUCT.md).
 
 Scanning happens only after a completed load for a tab whose monitor is Running and whose keyword monitoring is enabled. Reload Now follows the same completed-load and delayed-scan lifecycle. Scanning never increments the reload count, changes the reload deadline, or creates another reload loop.
 
-Immediately before each scan, LuckyFetch discovers the tab's current frame tree
+Immediately before each scan, Lucky Fetch discovers the tab's current frame tree
 and runs a compact local match in each accessible frame. The tab is Present when
 any frame matches. It is Absent only when every expected frame completed without
 a match. If a frame disappears, cannot be injected, or lacks permission, the
