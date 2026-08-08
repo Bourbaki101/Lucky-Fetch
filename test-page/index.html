@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LuckyFetch Interaction Test Page</title>
+    <style>
+      :root {
+        color: #182033;
+        background: #eef3f9;
+        font-family: system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body { max-width: 980px; margin: 0 auto; padding: 32px 20px 60px; }
+      header, section {
+        margin-bottom: 18px;
+        padding: 22px;
+        border: 1px solid #d5deea;
+        border-radius: 14px;
+        background: white;
+      }
+      h1, h2 { margin-top: 0; }
+      .reload-marker {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #e8f0ff;
+        color: #2456b8;
+        font-weight: 700;
+      }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      label { display: grid; gap: 6px; font-weight: 650; }
+      input, textarea, select, button, [contenteditable] {
+        padding: 10px;
+        border: 1px solid #aebbd0;
+        border-radius: 8px;
+        font: inherit;
+      }
+      textarea { min-height: 110px; resize: vertical; }
+      [contenteditable] { min-height: 80px; background: #fffef5; }
+      button {
+        align-self: end;
+        border-color: #2456b8;
+        background: #2f67d8;
+        color: white;
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .scroll-box {
+        height: 150px;
+        overflow: auto;
+        padding: 14px;
+        border: 1px solid #b9c5d6;
+        border-radius: 8px;
+        background: linear-gradient(#f8fbff, #e7f0ff);
+      }
+      .scroll-spacer { height: 520px; }
+      #log {
+        height: 180px;
+        overflow: auto;
+        margin: 0;
+        padding: 12px 12px 12px 32px;
+        border-radius: 8px;
+        background: #111827;
+        color: #dbeafe;
+        font: 12px/1.5 ui-monospace, monospace;
+      }
+      .warning {
+        padding: 12px;
+        border-left: 4px solid #dc8b14;
+        background: #fff8e8;
+      }
+      @media (max-width: 650px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>LuckyFetch interaction test page</h1>
+      <p>
+        Use this page to verify Delay, Pause, Stop, and active-typing protection.
+        Values in the form are intentionally not persisted.
+      </p>
+      <p class="reload-marker" id="reload-marker"></p>
+      <p class="warning">
+        Type something distinctive below. If the page reloads, the unsaved text
+        disappears—making accidental refreshes obvious.
+      </p>
+    </header>
+
+    <section>
+      <h2>Form and editing controls</h2>
+      <div class="grid">
+        <label>
+          Unsaved text input
+          <input id="text-input" placeholder="This text will be lost on reload" />
+        </label>
+        <label>
+          Select a test value
+          <select id="test-select">
+            <option>Alpha</option>
+            <option>Bravo</option>
+            <option>Charlie</option>
+          </select>
+        </label>
+        <label>
+          Unsaved textarea
+          <textarea id="test-textarea" placeholder="Keep typing through an alarm deadline…"></textarea>
+        </label>
+        <label>
+          Contenteditable region
+          <div id="editable" contenteditable="true" role="textbox" aria-multiline="true">
+            Edit this content. It will reset after a reload.
+          </div>
+        </label>
+        <button id="test-button" type="button">Log a button click</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Scrollable area</h2>
+      <div class="scroll-box" id="scroll-box" tabindex="0">
+        Scroll inside this panel to produce interaction events.
+        <div class="scroll-spacer"></div>
+        You reached the bottom.
+      </div>
+    </section>
+
+    <section>
+      <h2>Visible interaction log</h2>
+      <ol id="log" aria-live="polite"></ol>
+    </section>
+
+    <script>
+      const loadCount = Number(sessionStorage.getItem("luckyfetchTestLoads") || "0") + 1;
+      sessionStorage.setItem("luckyfetchTestLoads", String(loadCount));
+      document.getElementById("reload-marker").textContent =
+        `Page loads in this tab: ${loadCount} · Loaded at ${new Date().toLocaleTimeString()}`;
+
+      const log = document.getElementById("log");
+      let lastScrollLog = 0;
+      function record(message) {
+        const item = document.createElement("li");
+        item.textContent = `${new Date().toLocaleTimeString()} — ${message}`;
+        log.prepend(item);
+      }
+
+      document.addEventListener("pointerdown", (event) => {
+        record(`Pointer on ${event.target.tagName.toLowerCase()}`);
+      }, { capture: true });
+      document.addEventListener("keydown", (event) => {
+        record(`Key "${event.key}" in ${event.target.tagName.toLowerCase()}`);
+      }, { capture: true });
+      document.addEventListener("input", (event) => {
+        record(`Input changed in ${event.target.id || event.target.tagName.toLowerCase()}`);
+      }, { capture: true });
+      document.addEventListener("focusin", (event) => {
+        record(`Focus entered ${event.target.id || event.target.tagName.toLowerCase()}`);
+      }, { capture: true });
+      document.addEventListener("scroll", () => {
+        const now = Date.now();
+        if (now - lastScrollLog > 500) {
+          lastScrollLog = now;
+          record("Scroll detected");
+        }
+      }, { capture: true });
+      document.getElementById("test-button").addEventListener("click", () => {
+        record("Test button activated");
+      });
+      record("Test page ready");
+    </script>
+  </body>
+</html>
