@@ -1006,21 +1006,23 @@ function highlightFrameVisibleText(
     nodes.push(current);
   }
 
+  const preparedKeywords = sorted.map((keyword) => ({
+    keyword,
+    needle: caseSensitive ? keyword.value : keyword.value.toLowerCase()
+  }));
+
   let highlightedOccurrenceCount = 0;
   let truncated = current !== null;
   for (const node of nodes) {
     const text = node.data;
     const occupied = new Uint8Array(text.length);
+    const haystack = caseSensitive ? text : text.toLowerCase();
     const matches: Array<{
       start: number;
       end: number;
       keyword: KeywordRule;
     }> = [];
-    for (const keyword of sorted) {
-      const haystack = caseSensitive ? text : text.toLowerCase();
-      const needle = caseSensitive
-        ? keyword.value
-        : keyword.value.toLowerCase();
+    for (const { keyword, needle } of preparedKeywords) {
       let from = 0;
       while (needle.length > 0) {
         const start = haystack.indexOf(needle, from);
