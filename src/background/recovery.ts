@@ -64,10 +64,11 @@ export function planRecovery(
   }
 
   const keptIds = new Set(keep.map((monitor) => monitor.tabId));
+  const scheduleSet = new Set(scheduleTabIds);
   const clearAlarmTabIds = alarmTabIds.filter(
     (tabId) =>
       !keptIds.has(tabId) ||
-      !scheduleTabIds.includes(tabId)
+      !scheduleSet.has(tabId)
   );
 
   return { keep, removeTabIds, scheduleTabIds, clearAlarmTabIds };
