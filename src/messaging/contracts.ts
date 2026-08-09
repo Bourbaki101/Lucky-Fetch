@@ -5,6 +5,7 @@ import type {
   KeywordTestResult,
   KeywordMonitoringConfig,
   MonitorSettings,
+  NotificationHistoryEntry,
   ScanResult,
   TabMonitor,
   TabSummary,
@@ -70,6 +71,7 @@ export type PopupRequest =
   | { type: "monitor:clear-history"; tabId: number }
   | { type: "monitor:reset-baseline"; tabId: number }
   | { type: "monitor:reset"; tabId: number }
+  | { type: "notifications:clear"; tabId: number }
   | { type: "monitor:diagnostics"; tabId: number | null }
   | { type: "monitor:reconcile"; tabId: number | null }
   | { type: "monitor:reset-all"; tabId: number | null };
@@ -145,6 +147,7 @@ export type ExtensionResponse =
       tab: TabSummary | null;
       monitor: TabMonitor | null;
       diagnostics?: DiagnosticSnapshot;
+      notificationHistory?: NotificationHistoryEntry[];
       testResult?: KeywordTestResult;
       message?: string;
     }
@@ -203,7 +206,8 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
     "monitor:clear-highlights",
     "monitor:clear-history",
     "monitor:reset-baseline",
-    "monitor:reset"
+    "monitor:reset",
+    "notifications:clear"
   ].includes(request.type);
 }
 

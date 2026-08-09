@@ -23,6 +23,7 @@ export const DEFAULT_SCAN_DELAY_MS = 2_000;
 export const INCOMPLETE_SCAN_RETRY_DELAYS_MS = [500, 1_500, 3_000] as const;
 export const DETECTION_HISTORY_LIMIT = 50;
 export const POPUP_HISTORY_LIMIT = 5;
+export const NOTIFICATION_HISTORY_LIMIT = 15;
 export const MAX_KEYWORDS_PER_MONITOR = 20;
 export const MAX_KEYWORD_LENGTH = 200;
 export const MAX_MATCHED_KEYWORD_METADATA = 20;

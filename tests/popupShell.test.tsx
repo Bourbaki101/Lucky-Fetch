@@ -76,6 +76,15 @@ describe("popup shell", () => {
     expect(source).toContain("GitHub Repository");
     expect(source).toContain("Report an Issue");
     expect(source).toContain("Privacy Policy");
+    expect(source).toContain(
+      "https://bourbaki101.github.io/Lucky-Fetch/PRIVACY"
+    );
+    expect(source).toContain("<p>Reliable reloads, tab by tab</p>");
+    expect(source).not.toContain("v{extensionVersion}");
+    expect(source).toContain('id="notifications-tab"');
+    expect(source).toContain("No notifications yet");
+    expect(source).toContain('/icons/settings/monitor.png');
+    expect(source).toContain('/icons/settings/alert.png');
     expect(source).toContain("© 2026 Helios Lab");
     expect(source).toContain('placeholder="Ding! Something changed"');
   });

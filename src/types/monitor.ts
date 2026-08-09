@@ -199,6 +199,14 @@ export interface DetectionHistoryEntry {
   actionApplied: DetectionAction;
 }
 
+export interface NotificationHistoryEntry {
+  id: string;
+  state: KeywordMonitorMode;
+  keyword: string;
+  timestamp: number;
+  triggerLabel?: string;
+}
+
 export interface MonitorSettings {
   intervalMs: number;
   bypassCache: boolean;
@@ -227,8 +235,9 @@ export interface TabMonitor extends MonitorSettings {
 }
 
 export interface PersistedState {
-  version: 3;
+  version: 4;
   monitors: Record<string, TabMonitor>;
+  notificationHistory: NotificationHistoryEntry[];
 }
 
 export interface TabSummary {

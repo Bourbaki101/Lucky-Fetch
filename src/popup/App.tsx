@@ -24,10 +24,6 @@ import {
 } from "../shared/constants";
 import { errorMessage, withTimeout } from "../shared/async";
 import {
-  badgeForReloadDeadline,
-  nearestActiveReloadAt
-} from "../shared/badge";
-import {
   keywordConditionEquals,
   validateKeywordConfig
 } from "../monitoring/matching";
@@ -45,7 +41,12 @@ import {
   scanIdentityFromAlarm,
   tabIdFromAlarm
 } from "../scheduling/alarms";
-import { monitorKey, readState, writeState } from "../storage/storage";
+import {
+  monitorKey,
+  normalizePersistedState,
+  readState,
+  writeState
+} from "../storage/storage";
 import {
   readMonitorDraft,
   removeMonitorDraft,
@@ -62,6 +63,7 @@ import type {
   KeywordRule,
   KeywordTestResult,
   MonitorSettings,
+  NotificationHistoryEntry,
   PendingMonitorDraft,
   SiteAccessPreference,
   TabMonitor,
@@ -77,7 +79,7 @@ const PRESETS = [
 
 type PopupPhase = "loading" | "ready" | "unsupported" | "error";
 type ThemePreference = "system" | "light" | "dark";
-type PopupTab = "interval" | "monitor";
+type PopupTab = "interval" | "monitor" | "notifications";
 
 interface AppShellProps {
   children: ReactNode;
@@ -192,24 +194,8 @@ async function directResetMonitor(tabId: number): Promise<void> {
       CHROME_API_TIMEOUT_MS
     ),
     withTimeout(
-      chrome.action.setBadgeText(
-        { tabId, text: null } as unknown as chrome.action.BadgeTextDetails
-      ),
-      "Clear tab badge override",
-      CHROME_API_TIMEOUT_MS
-    ),
-    withTimeout(
-      chrome.action.setBadgeText({
-        text: (() => {
-          const nextReloadAt = nearestActiveReloadAt(
-            Object.values(latest.monitors)
-          );
-          return nextReloadAt === null
-            ? ""
-            : badgeForReloadDeadline(nextReloadAt).text;
-        })()
-      }),
-      "Restore global badge",
+      chrome.action.setBadgeText({ tabId, text: "" }),
+      "Clear tab badge",
       CHROME_API_TIMEOUT_MS
     )
   ]);
@@ -246,7 +232,7 @@ async function directResetAllMonitors(): Promise<void> {
     .filter((tabId): tabId is number => tabId !== null);
   const tabIds = [...new Set([...storedTabIds, ...alarmTabIds])];
   await withTimeout(
-    writeState({ version: 3, monitors: {} }),
+    writeState({ ...latest, monitors: {} }),
     "Clear saved monitors",
     CHROME_API_TIMEOUT_MS
   );
@@ -266,10 +252,8 @@ async function directResetAllMonitors(): Promise<void> {
         CHROME_API_TIMEOUT_MS
       ),
       withTimeout(
-        chrome.action.setBadgeText(
-          { tabId, text: null } as unknown as chrome.action.BadgeTextDetails
-        ),
-        `Clear badge override ${tabId}`,
+        chrome.action.setBadgeText({ tabId, text: "" }),
+        `Clear badge ${tabId}`,
         CHROME_API_TIMEOUT_MS
       )
       ])
@@ -291,6 +275,13 @@ function formatTimestamp(timestamp: number | null): string {
     hour: "numeric",
     minute: "2-digit",
     second: "2-digit"
+  }).format(timestamp);
+}
+
+function formatNotificationTimestamp(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
   }).format(timestamp);
 }
 
@@ -352,6 +343,9 @@ export function App() {
   const [phase, setPhase] = useState<PopupPhase>("loading");
   const [tab, setTab] = useState<TabSummary | null>(null);
   const [monitor, setMonitor] = useState<TabMonitor | null>(null);
+  const [notificationHistory, setNotificationHistory] = useState<
+    NotificationHistoryEntry[]
+  >([]);
   const [intervalValue, setIntervalValue] = useState("1");
   const [intervalUnit, setIntervalUnit] =
     useState<IntervalUnit>("minutes");
@@ -555,6 +549,9 @@ export function App() {
     }
     setTab(response.tab);
     setMonitor(response.monitor);
+    if (response.notificationHistory) {
+      setNotificationHistory(response.notificationHistory);
+    }
     if (response.monitor) hydrateConfiguration(response.monitor);
   }, [hydrateConfiguration]);
 
@@ -613,6 +610,7 @@ export function App() {
         const durableMonitor =
           durableState.monitors[monitorKey(summary.id)] ?? null;
         setMonitor(durableMonitor);
+        setNotificationHistory(durableState.notificationHistory);
         if (savedDraft?.pageOrigin === supportResult.permissionPattern) {
           restoredDraft = savedDraft;
         }
@@ -762,6 +760,21 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
+    const handleStorageChange = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string
+    ): void => {
+      if (areaName !== "local" || !changes[STORAGE_KEY]) return;
+      setNotificationHistory(
+        normalizePersistedState(changes[STORAGE_KEY].newValue)
+          .notificationHistory
+      );
+    };
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => chrome.storage.onChanged.removeListener(handleStorageChange);
+  }, []);
+
+  useEffect(() => {
     if (phase !== "ready" || !tab) return;
     let disposed = false;
     let inFlight = false;
@@ -807,6 +820,11 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const clearNotifications = async (): Promise<void> => {
+    if (!tab || notificationHistory.length === 0) return;
+    await runAction({ type: "notifications:clear", tabId: tab.id });
   };
 
   const start = async (): Promise<void> => {
@@ -1277,7 +1295,7 @@ export function App() {
       <img src="/icons/icon-48.png" width="30" height="30" alt="" />
       <div className="brand-copy">
         <h1>Lucky Fetch</h1>
-        <p>v{extensionVersion} <span aria-hidden="true">·</span> Reliable reloads, tab by tab</p>
+        <p>Reliable reloads, tab by tab</p>
       </div>
       {phase === "ready" && (
         <div className="header-actions">
@@ -1311,10 +1329,14 @@ export function App() {
         disabled={phase !== "ready"}
         onClick={() => setActiveTab("interval")}
         onKeyDown={(event) => {
-          if (event.key === "ArrowRight" || event.key === "End") {
+          if (event.key === "ArrowRight") {
             event.preventDefault();
             setActiveTab("monitor");
             document.getElementById("monitor-tab")?.focus();
+          } else if (event.key === "End") {
+            event.preventDefault();
+            setActiveTab("notifications");
+            document.getElementById("notifications-tab")?.focus();
           }
         }}
       >
@@ -1335,11 +1357,42 @@ export function App() {
             event.preventDefault();
             setActiveTab("interval");
             document.getElementById("interval-tab")?.focus();
+          } else if (event.key === "ArrowRight" || event.key === "End") {
+            event.preventDefault();
+            setActiveTab("notifications");
+            document.getElementById("notifications-tab")?.focus();
           }
         }}
       >
         Monitor
         {keywordEnabled && <span className="tab-indicator" aria-label="enabled" />}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        id="notifications-tab"
+        aria-controls="notifications-panel"
+        aria-selected={activeTab === "notifications"}
+        tabIndex={activeTab === "notifications" ? 0 : -1}
+        className={activeTab === "notifications" ? "active" : ""}
+        disabled={phase !== "ready"}
+        onClick={() => setActiveTab("notifications")}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            setActiveTab("monitor");
+            document.getElementById("monitor-tab")?.focus();
+          } else if (event.key === "Home") {
+            event.preventDefault();
+            setActiveTab("interval");
+            document.getElementById("interval-tab")?.focus();
+          }
+        }}
+      >
+        Notifications
+        {notificationHistory.length > 0 && (
+          <span className="tab-indicator" aria-label="has notifications" />
+        )}
       </button>
     </nav>
   );
@@ -1862,13 +1915,13 @@ export function App() {
               >
                 Report an Issue
               </a>
-              <button
-                type="button"
-                disabled
-                title="Privacy Policy coming soon"
+              <a
+                href="https://bourbaki101.github.io/Lucky-Fetch/PRIVACY"
+                target="_blank"
+                rel="noreferrer"
               >
                 Privacy Policy
-              </button>
+              </a>
             </div>
             <footer>© 2026 Helios Lab</footer>
           </section>
@@ -2680,6 +2733,68 @@ export function App() {
           </div>
         )}
         </div>
+        )}
+      </section>
+
+      <section
+        id="notifications-panel"
+        role="tabpanel"
+        aria-labelledby="notifications-tab"
+        hidden={activeTab !== "notifications"}
+        className="notifications-panel tab-panel"
+      >
+        <div className="notifications-heading">
+          <div className="notifications-title">
+            {notificationHistory.length > 0 && (
+              <img
+                className="notifications-alert-icon"
+                src="/icons/settings/alert.png"
+                alt=""
+              />
+            )}
+            <div>
+              <span className="section-kicker">Alert history</span>
+              <h2>Notifications</h2>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="secondary-button notification-clear-button"
+            disabled={busy || notificationHistory.length === 0}
+            onClick={() => void clearNotifications()}
+          >
+            Clear All
+          </button>
+        </div>
+
+        {notificationHistory.length === 0 ? (
+          <div className="notifications-empty">
+            <img src="/icons/settings/monitor.png" alt="" />
+            <h3>No notifications yet</h3>
+            <p>
+              Configure an alert in the Monitor tab to start receiving
+              notifications.
+            </p>
+          </div>
+        ) : (
+          <ol className="notification-history-list">
+            {notificationHistory.map((entry) => (
+              <li key={entry.id}>
+                <span
+                  className={`notification-state notification-state-${entry.state}`}
+                >
+                  {entry.state === "found" ? "Found" : "Lost"}
+                </span>
+                <div className="notification-entry-copy">
+                  <strong>{entry.keyword}</strong>
+                  {entry.triggerLabel && <span>{entry.triggerLabel}</span>}
+                  <time dateTime={new Date(entry.timestamp).toISOString()}>
+                    {formatNotificationTimestamp(entry.timestamp)}
+                  </time>
+                </div>
+              </li>
+            ))}
+          </ol>
         )}
       </section>
 

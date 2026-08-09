@@ -35,7 +35,7 @@ Keyword monitoring does not create a reload loop. A completed load schedules at 
 
 Alarm creation is followed by `chrome.alarms.get(name)` verification. A Running monitor is not allowed to keep a Running badge if Chromium did not retain its alarm; scheduling failure is persisted as Error. Alarm execution reloads the latest storage snapshot before making a decision.
 
-A singleton one-second timer updates the global badge from the nearest running monitor deadline. A 30-second repeating alarm remains a wake-up fallback; both paths recalculate from persisted absolute timestamps, so worker suspension or delayed delivery does not accumulate countdown drift.
+A singleton one-second timer updates each running monitor's per-tab badge from its own deadline. A 30-second repeating alarm remains a wake-up fallback; both paths recalculate from persisted absolute timestamps, so worker suspension or delayed delivery does not accumulate countdown drift.
 
 Reload Now resets a running monitor's deadline. It preserves Paused/Stopped state when used there.
 
@@ -45,16 +45,17 @@ Reload Now resets a running monitor's deadline. It preserves Paused/Stopped stat
 
 ```text
 {
-  version: 3,
+  version: 4,
   monitors: {
     "<tabId>": TabMonitor
-  }
+  },
+  notificationHistory: NotificationHistoryEntry[]
 }
 ```
 
-A monitor stores tab metadata, reload configuration/count/status, interaction timestamps, typing-protection deadline, an error message, a generated tab-instance token, separate keyword configuration/runtime, and a newest-first capped detection history. Version 1 records migrate locally with keyword monitoring disabled and an unknown baseline. Version 2 single-keyword records migrate to an ordered rule list with a deterministic stable legacy ID and `highlightMatches: false`. The normalizer accepts versions 1–3 and always emits version 3, making migration idempotent. A valid legacy runtime baseline and history are preserved.
+A monitor stores tab metadata, reload configuration/count/status, interaction timestamps, typing-protection deadline, an error message, a generated tab-instance token, separate keyword configuration/runtime, and a newest-first capped detection history. Version 1 records migrate locally with keyword monitoring disabled and an unknown baseline. Version 2 single-keyword records migrate to an ordered rule list with a deterministic stable legacy ID and `highlightMatches: false`. Version 4 adds the global notification history. The normalizer accepts versions 1–4 and always emits version 4, making migration idempotent. Valid legacy runtime baselines and detection histories are preserved.
 
-Each configured keyword has a stable ID and trimmed value. Matching and highlighting use the same case-sensitivity setting. Tab state is Present when any configured keyword matches in any successfully scanned frame. Frame matches are aggregated before the single Found/Lost transition is evaluated.
+Each configured keyword has a stable ID and trimmed value. Matching and highlighting use the same case-sensitivity setting. Tab state is Present when any configured keyword matches in any successfully scanned frame. Frame matches are aggregated before the single Found/Lost transition is evaluated. Successfully created browser alerts also append compact Found/Lost metadata to a global newest-first notification history capped at 15 entries.
 
 Highlighting is secondary to scanning. The background targets only the matching frame/document identities from the successful scan. The DOM highlighter clears its prior marks, skips unsafe/editable elements, applies longest phrases first to prevent overlap, and stops at 500 marks or 20,000 processed text nodes per frame. Typed highlight errors and truncation never change match state or create another detection.
 
@@ -79,17 +80,14 @@ The background derives the sender tab ID for content messages; page code cannot 
 
 ## Badge behavior
 
-The badge is scoped to the active tab:
+The badge is scoped per tab:
 
 - Running: compact remaining time such as `45s`, `3m`, or `2h`
-- Paused: `Ⅱ`
-- Completed: `✓`
-- Error: `!`
-- No running monitors: cleared
+- Tabs without a running countdown: cleared
 
-It refreshes every second while the worker is alive and also restores on state changes, tab activation/window focus, popup polling, startup, installation, and the global 30-second badge alarm. Because the toolbar badge is global, it shows the seconds until the earliest deadline across all running monitors.
+It refreshes every second while the worker is alive and also restores on state changes, tab activation/window focus, popup polling, startup, installation, and the 30-second badge alarm. Each running monitor writes its own `tabId` action override, so switching tabs immediately reveals that tab's countdown while the global action default remains clear.
 
-Badge countdown writes are global. Startup removes legacy per-tab badge overrides so the same nearest-deadline countdown is visible regardless of the active tab.
+The countdown timer still runs in the background service worker without the popup. Persisted absolute deadlines and the badge alarm preserve recovery behavior across worker suspension.
 
 ## User interaction handling
 
@@ -123,7 +121,7 @@ An overdue Running deadline is moved to a near-immediate recovery deadline one s
 
 The popup renders its shell before background communication and uses explicit `loading`, `ready`, `unsupported`, and `error` phases. Active-tab lookup, local fallback-state lookup, and typed background messaging are bounded. The `finally` path guarantees that initialization cannot remain in Loading without a transition.
 
-When background communication fails, the popup can still inspect local storage/alarms and directly reset a known tab monitor. The Reset action cancels the alarm, removes durable state and the tab-instance token, removes any legacy tab badge override, and refreshes the global badge from the remaining monitors. A separate confirmed development action resets every monitor.
+When background communication fails, the popup can still inspect local storage/alarms and directly reset a known tab monitor. The Reset action cancels the alarm, removes durable state and the tab-instance token, and clears that tab's badge. A separate confirmed development action resets every monitor.
 
 Structured diagnostic details include initialization status, durable/in-memory monitor state, matching alarm, open-tab validity, and recovery notes. They do not include page content or form values.
 

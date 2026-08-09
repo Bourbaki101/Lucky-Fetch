@@ -244,8 +244,9 @@ function installChromeMock(monitor: TabMonitor | null): MockEnvironment {
     ]
   ]);
   const state: PersistedState = {
-    version: 3,
-    monitors: monitor ? { "1": monitor } : {}
+    version: 4,
+    monitors: monitor ? { "1": monitor } : {},
+    notificationHistory: []
   };
   const session: Record<string, unknown> = monitor
     ? { "luckyfetch:tab-instance:1": monitor.tabInstanceId }
@@ -376,6 +377,9 @@ function installChromeMock(monitor: TabMonitor | null): MockEnvironment {
           if (next) {
             state.version = next.version;
             state.monitors = structuredClone(next.monitors);
+            state.notificationHistory = structuredClone(
+              next.notificationHistory
+            );
           }
         })
       },
@@ -515,7 +519,7 @@ describe("background runtime recovery", () => {
     vi.restoreAllMocks();
   });
 
-  it("restores one global countdown for the nearest running monitor", async () => {
+  it("restores independent per-tab countdowns without a global badge", async () => {
     const environment = installChromeMock(makeMonitor());
     environment.state.monitors["2"] = makeMonitor({
       tabId: 2,
@@ -534,6 +538,11 @@ describe("background runtime recovery", () => {
 
     await vi.waitFor(() => {
       expect(environment.setBadgeText).toHaveBeenCalledWith({
+        tabId: 1,
+        text: expect.stringMatching(/^\d+$/)
+      });
+      expect(environment.setBadgeText).toHaveBeenCalledWith({
+        tabId: 2,
         text: expect.stringMatching(/^[1-7]$/)
       });
     });
@@ -541,7 +550,7 @@ describe("background runtime recovery", () => {
       environment.setBadgeText.mock.calls
         .filter(([details]) => details.tabId === undefined)
         .some(([details]) => details.text !== "")
-    ).toBe(true);
+    ).toBe(false);
 
     const { startBadgeCountdown } = await import("../src/background/index");
     const countdownTimers = () =>
@@ -633,7 +642,10 @@ describe("background runtime recovery", () => {
     await sendMessage(environment, { type: "monitor:reset", tabId: 1 });
     expect(environment.state.monitors["1"]).toBeUndefined();
     expect(environment.alarms.has(alarmName(1))).toBe(false);
-    expect(environment.setBadgeText).toHaveBeenCalledWith({ text: "" });
+    expect(environment.setBadgeText).toHaveBeenCalledWith({
+      tabId: 1,
+      text: ""
+    });
   });
 
   it("turns reload rejection into a persisted error without another alarm", async () => {
@@ -1364,6 +1376,7 @@ describe("background runtime recovery", () => {
     );
     expect(environment.createNotification).toHaveBeenCalledOnce();
     expect(environment.state.monitors["1"]?.detectionHistory).toHaveLength(1);
+    expect(environment.state.notificationHistory).toEqual([]);
     expect(error).toHaveBeenCalledWith(
       "[LuckyFetch] Notification failed:",
       expect.objectContaining({
@@ -1598,6 +1611,36 @@ describe("background runtime recovery", () => {
     ).toBe(true);
   });
 
+  it("clears global notification history without changing monitor state", async () => {
+    const monitor = makeKeywordMonitor("continue", {
+      lastMatchState: true,
+      lastDetectionAt: 2_000
+    });
+    const environment = installChromeMock(monitor);
+    environment.state.notificationHistory = [
+      {
+        id: "notification-1",
+        state: "found",
+        keyword: "New Ticket",
+        timestamp: 2_000,
+        triggerLabel: "Support queue"
+      }
+    ];
+    await importBackground();
+    const response = await sendMessage(environment, {
+      type: "notifications:clear",
+      tabId: 1
+    });
+
+    expect(environment.state.notificationHistory).toEqual([]);
+    expect(environment.state.monitors["1"]?.keywordMonitoring).toEqual(
+      monitor.keywordMonitoring
+    );
+    expect(
+      response.ok ? response.notificationHistory : undefined
+    ).toEqual([]);
+  });
+
   it("preserves the baseline for highlight-only edits and resets it for keyword-list edits", async () => {
     const monitor = makeKeywordMonitor("continue", {
       lastMatchState: true,
@@ -1690,6 +1733,12 @@ describe("background runtime recovery", () => {
     expect(
       environment.state.monitors["1"]?.detectionHistory[0]?.matchedKeywords
     ).toHaveLength(4);
+    expect(environment.state.notificationHistory).toEqual([
+      expect.objectContaining({
+        state: "found",
+        keyword: "Urgent, Escalated, New Ticket, VIP"
+      })
+    ]);
     expect(
       environment.createNotification.mock.calls[0]?.[1]?.message
     ).toBe(

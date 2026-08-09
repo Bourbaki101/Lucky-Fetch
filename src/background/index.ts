@@ -9,7 +9,11 @@ import {
   isExtensionRequest,
   isPagePingResponse
 } from "../messaging/contracts";
-import { addDetectionHistory } from "../monitoring/history";
+import {
+  addDetectionHistory,
+  addNotificationHistory,
+  clearNotificationHistory
+} from "../monitoring/history";
 import {
   aggregateFrameScans,
   type FrameScanOutcome,
@@ -50,7 +54,6 @@ import {
 import { errorMessage, withTimeout } from "../shared/async";
 import {
   badgeForReloadDeadline,
-  nearestActiveReloadAt,
   type BadgePresentation
 } from "../shared/badge";
 import {
@@ -109,6 +112,7 @@ import type {
   KeywordMonitoringConfig,
   MatchedKeyword,
   MonitorSettings,
+  NotificationHistoryEntry,
   PersistedState,
   ScanResult,
   TabMonitor,
@@ -120,7 +124,11 @@ import { isPlausibleMonitor, planRecovery } from "./recovery";
 
 type InitializationStatus = "starting" | "ready" | "error";
 
-let state: PersistedState = { version: 3, monitors: {} };
+let state: PersistedState = {
+  version: 4,
+  monitors: {},
+  notificationHistory: []
+};
 let operationQueue: Promise<unknown> = Promise.resolve();
 let initializationStatus: InitializationStatus = "starting";
 let initializationError: string | null = null;
@@ -1323,6 +1331,48 @@ async function setGlobalBadge(badge: BadgePresentation): Promise<void> {
   }
 }
 
+async function setTabBadge(
+  tabId: number,
+  badge: BadgePresentation
+): Promise<void> {
+  try {
+    await Promise.all([
+      api(
+        `Set badge text for tab ${tabId}`,
+        chrome.action.setBadgeText({ tabId, text: badge.text })
+      ),
+      api(
+        `Set badge color for tab ${tabId}`,
+        chrome.action.setBadgeBackgroundColor({
+          tabId,
+          color: badge.color
+        })
+      ),
+      api(
+        `Set action title for tab ${tabId}`,
+        chrome.action.setTitle({ tabId, title: badge.title })
+      )
+    ]);
+  } catch (error) {
+    console.error("[badge:update]", { tabId, error });
+    throw error;
+  }
+}
+
+function countdownBadgeForMonitor(
+  monitor: TabMonitor | undefined,
+  now = Date.now()
+): BadgePresentation {
+  if (
+    monitor?.status !== "running" ||
+    monitor.nextReloadAt === null ||
+    !Number.isFinite(monitor.nextReloadAt)
+  ) {
+    return { text: "", color: "#59636e", title: "Lucky Fetch" };
+  }
+  return badgeForReloadDeadline(monitor.nextReloadAt, now);
+}
+
 function stopBadgeCountdownTimer(): void {
   if (badgeCountdownTimer === null) return;
   clearInterval(badgeCountdownTimer);
@@ -1331,19 +1381,24 @@ function stopBadgeCountdownTimer(): void {
 
 async function updateBadgeCountdown(): Promise<boolean> {
   const latest = await api("Read monitor state for badge", readState());
-  const nextReloadAt = nearestActiveReloadAt(Object.values(latest.monitors));
-  if (nextReloadAt === null) {
-    stopBadgeCountdownTimer();
-    await setGlobalBadge({
-      text: "",
-      color: "#59636e",
-      title: "Lucky Fetch"
-    });
-    return false;
-  }
-
-  await setGlobalBadge(badgeForReloadDeadline(nextReloadAt));
-  return true;
+  const monitors = Object.values(latest.monitors);
+  const now = Date.now();
+  await Promise.all(
+    monitors.map((monitor) =>
+      setTabBadge(
+        monitor.tabId,
+        countdownBadgeForMonitor(monitor, now)
+      )
+    )
+  );
+  const hasRunningCountdown = monitors.some(
+    (monitor) =>
+      monitor.status === "running" &&
+      monitor.nextReloadAt !== null &&
+      Number.isFinite(monitor.nextReloadAt)
+  );
+  if (!hasRunningCountdown) stopBadgeCountdownTimer();
+  return hasRunningCountdown;
 }
 
 function trackBadgeCountdownUpdate(
@@ -1408,18 +1463,9 @@ async function restoreBadgeCountdown(): Promise<void> {
   if (await syncBadgeCountdown(true)) startBadgeCountdownTimer();
 }
 
-async function clearLegacyTabBadgeOverride(tabId: number): Promise<void> {
-  await api(
-    `Clear legacy badge override for tab ${tabId}`,
-    chrome.action.setBadgeText(
-      { tabId, text: null } as unknown as chrome.action.BadgeTextDetails
-    )
-  );
-}
-
-async function applyBadge(tabId: number, _monitor?: TabMonitor): Promise<void> {
-  await clearLegacyTabBadgeOverride(tabId);
-  await restoreBadgeCountdown();
+async function applyBadge(tabId: number, monitor?: TabMonitor): Promise<void> {
+  await setTabBadge(tabId, countdownBadgeForMonitor(monitor));
+  if (monitor?.status === "running") startBadgeCountdownTimer();
 }
 
 async function updateActiveBadge(): Promise<void> {
@@ -1463,6 +1509,21 @@ async function bestEffortBadge(
 
 async function persistState(): Promise<void> {
   await api("Persist monitor state", writeState(state));
+}
+
+async function persistNotificationHistoryEntry(
+  entry: NotificationHistoryEntry
+): Promise<void> {
+  const latest = await api(
+    "Read state before notification history write",
+    readState()
+  );
+  latest.notificationHistory = addNotificationHistory(
+    latest.notificationHistory,
+    entry
+  );
+  state = latest;
+  await api("Persist notification history", writeState(state));
 }
 
 async function saveMonitorRecord(
@@ -1618,7 +1679,11 @@ async function resetAllMonitors(): Promise<void> {
     .filter((tabId): tabId is number => tabId !== null);
   const tabIds = [...new Set([...monitorTabIds, ...alarmTabIds])];
 
-  state = { version: 3, monitors: {} };
+  state = {
+    version: 4,
+    monitors: {},
+    notificationHistory: latest.notificationHistory
+  };
   await api("Persist full monitor reset", writeState(state));
 
   const cleanup = await Promise.allSettled(
@@ -1674,7 +1739,7 @@ async function buildDiagnostics(
   const storedState =
     stateResult.status === "fulfilled"
       ? stateResult.value
-      : { version: 3 as const, monitors: {} };
+      : { version: 4 as const, monitors: {}, notificationHistory: [] };
   const alarms =
     alarmsResult.status === "fulfilled" ? alarmsResult.value : [];
   const storedMonitor =
@@ -1897,7 +1962,11 @@ async function recoverState(): Promise<void> {
     }
   }
 
-  state = { version: 3, monitors: recovered };
+  state = {
+    version: 4,
+    monitors: recovered,
+    notificationHistory: saved.notificationHistory
+  };
   await persistState();
 
   const alarmsByName = new Map(alarms.map((alarm) => [alarm.name, alarm]));
@@ -1935,7 +2004,11 @@ async function recoverState(): Promise<void> {
     }
   }
 
-  state = { version: 3, monitors: recovered };
+  state = {
+    version: 4,
+    monitors: recovered,
+    notificationHistory: saved.notificationHistory
+  };
   await persistState();
 
   const activeRunningIds = new Set(
@@ -3202,6 +3275,26 @@ async function scanLoadedPage(
 
   try {
     await createDetectionNotification(detected, entry, notificationFlow);
+    try {
+      await persistNotificationHistoryEntry({
+        id: entry.id,
+        state: entry.mode,
+        keyword: entry.keyword,
+        timestamp: entry.detectedAt,
+        ...(current.keywordMonitoring.notificationMessage.trim()
+          ? {
+              triggerLabel:
+                current.keywordMonitoring.notificationMessage.trim()
+            }
+          : {})
+      });
+    } catch (historyError) {
+      console.error("[notification:history]", {
+        tabId,
+        notificationId: entry.id,
+        error: errorMessage(historyError)
+      });
+    }
     console.info("[scan:notification]", {
       tabId,
       generation,
@@ -3360,6 +3453,23 @@ async function getCurrentMonitor(
 async function handlePopupRequest(
   request: PopupRequest
 ): Promise<ExtensionResponse> {
+  if (request.type === "notifications:clear") {
+    const latest = await api(
+      "Read state before clearing notification history",
+      readState()
+    );
+    latest.notificationHistory = clearNotificationHistory();
+    state = latest;
+    await persistState();
+    const tab = await getTabIfPresent(request.tabId);
+    return {
+      ok: true,
+      tab: tab ? toTabSummary(tab) : null,
+      monitor: getMonitor(state, request.tabId) ?? null,
+      notificationHistory: state.notificationHistory,
+      message: "Notification history cleared."
+    };
+  }
   if (request.type === "monitor:reset") {
     await resetMonitor(request.tabId);
     const tab = await getTabIfPresent(request.tabId);
@@ -3412,7 +3522,12 @@ async function handlePopupRequest(
   switch (request.type) {
     case "monitor:get-current": {
       const current = await getCurrentMonitor(request.tabId);
-      return { ok: true, tab: current.tab, monitor: current.monitor };
+      return {
+        ok: true,
+        tab: current.tab,
+        monitor: current.monitor,
+        notificationHistory: state.notificationHistory
+      };
     }
     case "monitor:start": {
       const monitor = await startMonitor(

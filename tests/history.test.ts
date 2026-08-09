@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   addDetectionHistory,
-  clearDetectionHistory
+  addNotificationHistory,
+  clearDetectionHistory,
+  clearNotificationHistory
 } from "../src/monitoring/history";
-import type { DetectionHistoryEntry } from "../src/types/monitor";
+import type {
+  DetectionHistoryEntry,
+  NotificationHistoryEntry
+} from "../src/types/monitor";
 
 function entry(index: number): DetectionHistoryEntry {
   return {
@@ -43,5 +48,29 @@ describe("local detection history", () => {
   it("stores only compact event metadata", () => {
     expect(entry(1)).not.toHaveProperty("pageText");
     expect(entry(1)).not.toHaveProperty("excerpt");
+  });
+});
+
+describe("notification history", () => {
+  const notification = (index: number): NotificationHistoryEntry => ({
+    id: `notification-${index}`,
+    state: index % 2 === 0 ? "found" : "lost",
+    keyword: `Keyword ${index}`,
+    timestamp: index
+  });
+
+  it("keeps only the newest 15 entries in storage order", () => {
+    const history = Array.from({ length: 15 }, (_, index) =>
+      notification(15 - index)
+    );
+    expect(
+      addNotificationHistory(history, notification(16)).map(({ id }) => id)
+    ).toEqual(
+      Array.from({ length: 15 }, (_, index) => `notification-${16 - index}`)
+    );
+  });
+
+  it("clears notification history independently", () => {
+    expect(clearNotificationHistory()).toEqual([]);
   });
 });

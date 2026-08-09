@@ -28,7 +28,7 @@ describe("keyword state persistence migration", () => {
       version: 1,
       monitors: { "1": phaseOneMonitor() }
     });
-    expect(state.version).toBe(3);
+    expect(state.version).toBe(4);
     expect(state.monitors["1"]?.keywordMonitoring.enabled).toBe(false);
     expect(
       state.monitors["1"]?.keywordMonitoring.notificationMessage
@@ -176,5 +176,31 @@ describe("keyword state persistence migration", () => {
     expect(state.monitors["1"]?.detectionHistory[1]).not.toHaveProperty(
       "pageText"
     );
+  });
+
+  it("normalizes persisted notification history to the newest 15 entries", () => {
+    const notificationHistory = Array.from({ length: 16 }, (_, index) => ({
+      id: `notification-${index + 1}`,
+      state: index % 2 === 0 ? "found" : "lost",
+      keyword: `Keyword ${index + 1}`,
+      timestamp: index + 1,
+      triggerLabel: "  Queue alert  ",
+      pageText: "must not survive"
+    }));
+    const state = normalizePersistedState({
+      version: 4,
+      monitors: {},
+      notificationHistory
+    });
+
+    expect(state.notificationHistory).toHaveLength(15);
+    expect(state.notificationHistory[0]).toEqual({
+      id: "notification-16",
+      state: "lost",
+      keyword: "Keyword 16",
+      timestamp: 16,
+      triggerLabel: "Queue alert"
+    });
+    expect(state.notificationHistory.at(-1)?.id).toBe("notification-2");
   });
 });

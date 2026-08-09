@@ -1,4 +1,7 @@
-import { STORAGE_KEY } from "../shared/constants";
+import {
+  NOTIFICATION_HISTORY_LIMIT,
+  STORAGE_KEY
+} from "../shared/constants";
 import { validateKeywordConfig } from "../monitoring/matching";
 import {
   createKeywordConfig,
@@ -10,13 +13,18 @@ import type {
   KeywordMonitoringConfig,
   KeywordMonitoringRuntime,
   PersistedState,
+  NotificationHistoryEntry,
   TabMonitor,
   TypedHighlightError,
   TypedMonitorError
 } from "../types/monitor";
 import { HIGHLIGHT_ERROR_CODES, MONITOR_ERROR_CODES } from "../types/monitor";
 
-const EMPTY_STATE: PersistedState = { version: 3, monitors: {} };
+const EMPTY_STATE: PersistedState = {
+  version: 4,
+  monitors: {},
+  notificationHistory: []
+};
 
 function legacyKeywordId(value: string): string {
   let hash = 2_166_136_261;
@@ -268,6 +276,31 @@ function normalizeHistoryEntry(
   };
 }
 
+function normalizeNotificationHistoryEntry(
+  value: unknown
+): NotificationHistoryEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const entry = value as Partial<NotificationHistoryEntry>;
+  if (
+    typeof entry.id !== "string" ||
+    !["found", "lost"].includes(entry.state ?? "") ||
+    typeof entry.keyword !== "string" ||
+    typeof entry.timestamp !== "number" ||
+    !Number.isFinite(entry.timestamp)
+  ) {
+    return null;
+  }
+  return {
+    id: entry.id,
+    state: entry.state!,
+    keyword: entry.keyword,
+    timestamp: entry.timestamp,
+    ...(typeof entry.triggerLabel === "string" && entry.triggerLabel.trim()
+      ? { triggerLabel: entry.triggerLabel.trim() }
+      : {})
+  };
+}
+
 function corruptStateError(): TypedMonitorError {
   return {
     code: "CORRUPT_STATE",
@@ -390,9 +423,10 @@ export function normalizePersistedState(value: unknown): PersistedState {
   const candidate = value as {
     version?: unknown;
     monitors?: unknown;
+    notificationHistory?: unknown;
   };
   if (
-    ![1, 2, 3].includes(Number(candidate.version)) ||
+    ![1, 2, 3, 4].includes(Number(candidate.version)) ||
     !candidate.monitors ||
     typeof candidate.monitors !== "object" ||
     Array.isArray(candidate.monitors)
@@ -405,7 +439,16 @@ export function normalizePersistedState(value: unknown): PersistedState {
     const normalized = normalizeMonitor(monitor);
     if (normalized) monitors[key] = normalized;
   }
-  return { version: 3, monitors };
+  const notificationHistory = Array.isArray(candidate.notificationHistory)
+    ? candidate.notificationHistory
+        .map(normalizeNotificationHistoryEntry)
+        .filter(
+          (entry): entry is NotificationHistoryEntry => entry !== null
+        )
+        .sort((left, right) => right.timestamp - left.timestamp)
+        .slice(0, NOTIFICATION_HISTORY_LIMIT)
+    : [];
+  return { version: 4, monitors, notificationHistory };
 }
 
 export async function readState(): Promise<PersistedState> {
