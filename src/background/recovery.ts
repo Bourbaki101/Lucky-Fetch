@@ -12,6 +12,8 @@ export interface RecoveryPlan {
   clearAlarmTabIds: number[];
 }
 
+const VALID_STATUSES = new Set(["running", "paused", "stopped", "completed", "error"]);
+
 export function isPlausibleMonitor(value: unknown): value is TabMonitor {
   if (!value || typeof value !== "object") return false;
   const monitor = value as Partial<TabMonitor>;
@@ -25,9 +27,7 @@ export function isPlausibleMonitor(value: unknown): value is TabMonitor {
     (monitor.nextReloadAt === null ||
       (typeof monitor.nextReloadAt === "number" &&
         Number.isFinite(monitor.nextReloadAt))) &&
-    ["running", "paused", "stopped", "completed", "error"].includes(
-      monitor.status ?? ""
-    )
+    VALID_STATUSES.has(monitor.status ?? "")
   );
 }
 
