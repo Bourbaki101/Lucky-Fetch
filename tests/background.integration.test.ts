@@ -18,10 +18,12 @@ import {
 } from "../src/scheduling/alarms";
 import { STORAGE_KEY } from "../src/shared/constants";
 import { createRunningMonitor } from "../src/shared/stateMachine";
+import { createProfile } from "../src/shared/profiles";
 import type {
   DetectionAction,
   KeywordMonitoringRuntime,
   PersistedState,
+  Profile,
   TabMonitor
 } from "../src/types/monitor";
 
@@ -178,6 +180,27 @@ function makeKeywordMonitor(
   };
 }
 
+function makeProfile(
+  id = "profile-1",
+  behavior: Profile["behavior"] = "suggest"
+): Profile {
+  return createProfile([], {
+    name: "Example Profile",
+    enabled: true,
+    match: { scope: "exact", url: "https://example.com/" },
+    behavior,
+    reloadConfig: {
+      reloadEnabled: true,
+      intervalMs: 10_000,
+      bypassCache: false,
+      maximumReloads: null,
+      interactionBehavior: "ignore",
+      protectActiveTyping: true
+    },
+    monitorConfig: makeMonitor().keywordMonitoring
+  }, id, 1)[0]!;
+}
+
 function scanAlarmNames(environment: MockEnvironment): string[] {
   return [...environment.alarms.keys()].filter(
     (name) => scanIdentityFromAlarm(name) !== null
@@ -244,10 +267,11 @@ function installChromeMock(monitor: TabMonitor | null): MockEnvironment {
     ]
   ]);
   const state: PersistedState = {
-    version: 5,
+    version: 6,
     monitors: monitor ? { "1": monitor } : {},
     notificationHistory: [],
-    quickTriggers: []
+    quickTriggers: [],
+    profiles: []
   };
   const session: Record<string, unknown> = monitor
     ? { "luckyfetch:tab-instance:1": monitor.tabInstanceId }
@@ -382,6 +406,7 @@ function installChromeMock(monitor: TabMonitor | null): MockEnvironment {
               next.notificationHistory
             );
             state.quickTriggers = structuredClone(next.quickTriggers);
+            state.profiles = structuredClone(next.profiles);
           }
         })
       },
@@ -587,6 +612,40 @@ describe("background runtime recovery", () => {
     expect(accepted.ok).toBe(true);
   });
 
+  it("enforces monitor-delay boundaries for custom reload intervals", async () => {
+    const environment = installChromeMock(null);
+    await importBackground();
+    const keywordMonitoring = makeKeywordMonitor().keywordMonitoring;
+    const settings = (intervalMs: number) => ({
+      intervalMs,
+      bypassCache: false,
+      maximumReloads: null,
+      interactionBehavior: "ignore" as const,
+      protectActiveTyping: true
+    });
+
+    for (const [intervalMs, scanDelayMs, valid] of [
+      [14_000, 7_000, true],
+      [14_000, 8_000, false],
+      [14_000, 16_000, false],
+      [17_000, 8_000, true],
+      [17_000, 9_000, false]
+    ] as const) {
+      const response = await sendMessage(environment, {
+        type: "monitor:start",
+        tabId: 1,
+        settings: settings(intervalMs),
+        keywordMonitoring: { ...keywordMonitoring, scanDelayMs }
+      });
+      expect(response.ok).toBe(valid);
+      if (!valid && !response.ok) {
+        expect(response.error).toContain(
+          `${Math.floor(intervalMs / 2_000)} seconds or less`
+        );
+      }
+    }
+  });
+
   it("opens and stops Activity entries through the existing tab paths", async () => {
     const environment = installChromeMock(makeKeywordMonitor());
     await importBackground();
@@ -715,6 +774,91 @@ describe("background runtime recovery", () => {
         restored?.nextReloadAt
       );
     });
+  });
+
+  it("repairs a stale future deadline instead of displaying an absurd countdown", async () => {
+    const before = Date.now();
+    const environment = installChromeMock(
+      makeMonitor({
+        intervalMs: 14_000,
+        nextReloadAt: before + 899_000
+      })
+    );
+    await importBackground();
+
+    await vi.waitFor(() => {
+      const restored = environment.state.monitors["1"];
+      expect(restored?.nextReloadAt).toBeGreaterThan(before);
+      expect(restored?.nextReloadAt).toBeLessThanOrEqual(before + 20_000);
+      expect(environment.alarms.get(alarmName(1))?.scheduledTime).toBe(
+        restored?.nextReloadAt
+      );
+    });
+    expect(
+      environment.setBadgeText.mock.calls.some(
+        ([details]) => details.tabId === 1 && details.text === "899"
+      )
+    ).toBe(false);
+
+    const snapshot = await sendMessage(environment, {
+      type: "activity:get",
+      tabId: 1
+    });
+    expect(snapshot.ok && snapshot.activity?.[0]?.nextReloadAt).toBe(
+      environment.state.monitors["1"]?.nextReloadAt
+    );
+  });
+
+  it("repairs a stale deadline introduced while Activity is already running", async () => {
+    const environment = installChromeMock(
+      makeMonitor({ intervalMs: 14_000 })
+    );
+    await importBackground();
+    await vi.waitFor(() => expect(environment.alarms.has(alarmName(1))).toBe(true));
+
+    const before = Date.now();
+    environment.state.monitors["1"] = {
+      ...environment.state.monitors["1"]!,
+      nextReloadAt: before + 899_000
+    };
+    const snapshot = await sendMessage(environment, {
+      type: "activity:get",
+      tabId: 1
+    });
+
+    const repaired = environment.state.monitors["1"]?.nextReloadAt;
+    expect(repaired).toBeGreaterThan(before);
+    expect(repaired).toBeLessThanOrEqual(before + 20_000);
+    expect(snapshot.ok && snapshot.activity?.[0]).toMatchObject({
+      reloadActive: true,
+      intervalMs: 14_000,
+      nextReloadAt: repaired
+    });
+    expect(environment.alarms.get(alarmName(1))?.scheduledTime).toBe(repaired);
+  });
+
+  it("stops recovery of an invalid custom Reload and Monitor combination", async () => {
+    const invalid = makeKeywordMonitor();
+    invalid.intervalMs = 14_000;
+    invalid.nextReloadAt = Date.now() + 14_000;
+    invalid.keywordMonitoring = {
+      ...invalid.keywordMonitoring,
+      scanDelayMs: 16_000
+    };
+    const environment = installChromeMock(invalid);
+    await importBackground();
+
+    await vi.waitFor(() => {
+      expect(environment.state.monitors["1"]).toMatchObject({
+        status: "error",
+        nextReloadAt: null,
+        errorMessage:
+          "Monitor delay must be 7 seconds or less with a 14-second reload interval."
+      });
+      expect(environment.alarms.has(alarmName(1))).toBe(false);
+    });
+    expect(environment.state.monitors["1"]?.keywordMonitoring.scanDelayMs)
+      .toBe(16_000);
   });
 
   it("executes an alarm from latest storage and reschedules after reload", async () => {
@@ -2081,5 +2225,89 @@ describe("background runtime recovery", () => {
     );
     expect(environment.updateTab).not.toHaveBeenCalled();
     expect(environment.updateWindow).not.toHaveBeenCalled();
+  });
+
+  it("detects a matching Suggest Profile without auto-starting it, then starts it explicitly", async () => {
+    const environment = installChromeMock(null);
+    environment.state.profiles = [makeProfile()];
+    await importBackground();
+
+    environment.updatedEvent.emit(1, { status: "complete" }, environment.tabs.get(1)!);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(environment.state.monitors["1"]).toBeUndefined();
+
+    const current = await sendMessage(environment, { type: "monitor:get-current", tabId: 1 });
+    expect(current.ok && current.profileMatches?.matches.map(({ id }) => id)).toEqual(["profile-1"]);
+    const started = await sendMessage(environment, { type: "profile:start", tabId: 1, profileId: "profile-1" });
+    expect(started.ok && started.monitor).toMatchObject({
+      status: "running",
+      profileId: "profile-1",
+      profileName: "Example Profile"
+    });
+    expect(environment.alarms.has(alarmName(1))).toBe(true);
+  });
+
+  it("auto-starts one matching Profile and does not restart it on repeated completed loads", async () => {
+    const environment = installChromeMock(null);
+    environment.state.profiles = [makeProfile("auto", "auto-start")];
+    await importBackground();
+
+    environment.updatedEvent.emit(1, { status: "complete" }, environment.tabs.get(1)!);
+    await vi.waitFor(() => expect(environment.state.monitors["1"]?.profileId).toBe("auto"));
+    const first = environment.state.monitors["1"]!;
+    const firstDeadline = first.nextReloadAt;
+    const firstInstance = first.tabInstanceId;
+
+    environment.updatedEvent.emit(1, { status: "complete" }, environment.tabs.get(1)!);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(environment.state.monitors["1"]?.tabInstanceId).toBe(firstInstance);
+    expect(environment.state.monitors["1"]?.nextReloadAt).toBe(firstDeadline);
+    expect([...environment.alarms.keys()].filter((name) => name === alarmName(1))).toHaveLength(1);
+  });
+
+  it("does not auto-start disabled, non-matching, invalid, or equally conflicting Profiles", async () => {
+    const environment = installChromeMock(null);
+    const disabled = { ...makeProfile("disabled", "auto-start"), enabled: false };
+    const nonMatching = {
+      ...makeProfile("other", "auto-start"),
+      match: { scope: "exact" as const, url: "https://other.example/" }
+    };
+    const invalid = makeProfile("invalid", "auto-start");
+    invalid.monitorConfig = {
+      ...invalid.monitorConfig,
+      enabled: true,
+      keywords: [{ id: "available", value: "Available" }],
+      scanDelayMs: 9_000
+    };
+    const conflictOne = makeProfile("conflict-1", "auto-start");
+    const conflictTwo = { ...makeProfile("conflict-2", "auto-start"), name: "Second" };
+    environment.state.profiles = [disabled, nonMatching, invalid, conflictOne, conflictTwo];
+    await importBackground();
+
+    environment.updatedEvent.emit(1, { status: "complete" }, environment.tabs.get(1)!);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(environment.state.monitors["1"]).toBeUndefined();
+
+    const response = await sendMessage(environment, { type: "monitor:get-current", tabId: 1 });
+    expect(response.ok && response.profileMatches?.autoStartProfile).toBeNull();
+    expect(response.ok && response.profileMatches?.autoStartConflict.map(({ id }) => id))
+      .toEqual(["conflict-1", "invalid", "conflict-2"]);
+    const invalidStart = await sendMessage(environment, {
+      type: "profile:start",
+      tabId: 1,
+      profileId: "invalid"
+    });
+    expect(invalidStart).toMatchObject({ ok: false });
+  });
+
+  it("does not replace an existing active manual job with an Auto-start Profile", async () => {
+    const manual = makeMonitor();
+    const environment = installChromeMock(manual);
+    environment.state.profiles = [makeProfile("auto", "auto-start")];
+    await importBackground();
+    environment.updatedEvent.emit(1, { status: "complete" }, environment.tabs.get(1)!);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(environment.state.monitors["1"]?.tabInstanceId).toBe(manual.tabInstanceId);
+    expect(environment.state.monitors["1"]?.profileId).toBeNull();
   });
 });

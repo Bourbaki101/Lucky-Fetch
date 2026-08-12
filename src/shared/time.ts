@@ -29,7 +29,10 @@ export function normalizeIntervalMs(value: unknown): number {
 }
 
 export function getMaxMonitorDelay(intervalMs: number): number {
-  return Math.floor(normalizeIntervalMs(intervalMs) * MONITOR_DELAY_RELOAD_RATIO);
+  const effectiveIntervalSeconds = normalizeIntervalMs(intervalMs) / 1_000;
+  return Math.floor(
+    effectiveIntervalSeconds * MONITOR_DELAY_RELOAD_RATIO
+  ) * 1_000;
 }
 
 function formatSeconds(ms: number): string {
@@ -91,10 +94,32 @@ export function remainingMs(
   nextReloadAt: number | null,
   now = Date.now()
 ): number | null {
-  return nextReloadAt === null ? null : Math.max(0, nextReloadAt - now);
+  return nextReloadAt === null || !Number.isFinite(nextReloadAt)
+    ? null
+    : Math.max(0, nextReloadAt - now);
+}
+
+export function remainingReloadMs(
+  nextReloadAt: number | null,
+  intervalMs: number,
+  now = Date.now()
+): number | null {
+  const remaining = remainingMs(nextReloadAt, now);
+  if (remaining === null) return null;
+  const maximumRemaining = normalizeIntervalMs(intervalMs) + 1_000;
+  return remaining <= maximumRemaining ? remaining : null;
+}
+
+export function hasPlausibleReloadDeadline(
+  nextReloadAt: number | null,
+  intervalMs: number,
+  now = Date.now()
+): boolean {
+  return remainingReloadMs(nextReloadAt, intervalMs, now) !== null;
 }
 
 export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms)) return "0s";
   const seconds = Math.max(0, Math.ceil(ms / 1_000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.ceil(seconds / 60);
@@ -105,7 +130,7 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatCountdown(ms: number | null): string {
-  if (ms === null) return "—";
+  if (ms === null || !Number.isFinite(ms)) return "—";
   const totalSeconds = Math.max(0, Math.ceil(ms / 1_000));
   const hours = Math.floor(totalSeconds / 3_600);
   const minutes = Math.floor((totalSeconds % 3_600) / 60);

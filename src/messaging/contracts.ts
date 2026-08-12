@@ -7,6 +7,9 @@ import type {
   KeywordMonitoringConfig,
   MonitorSettings,
   NotificationHistoryEntry,
+  Profile,
+  ProfileInput,
+  ProfileMatchResult,
   ScanResult,
   TabMonitor,
   TabSummary,
@@ -78,6 +81,11 @@ export type PopupRequest =
   | { type: "activity:stop"; tabId: number }
   | { type: "quick-trigger:save"; tabId: number; value: string }
   | { type: "quick-trigger:remove"; tabId: number; value: string }
+  | { type: "profile:create"; tabId: number; profile: ProfileInput }
+  | { type: "profile:update"; tabId: number; profileId: string; profile: ProfileInput }
+  | { type: "profile:delete"; tabId: number; profileId: string }
+  | { type: "profile:toggle"; tabId: number; profileId: string; enabled: boolean }
+  | { type: "profile:start"; tabId: number; profileId: string }
   | { type: "monitor:diagnostics"; tabId: number | null }
   | { type: "monitor:reconcile"; tabId: number | null }
   | { type: "monitor:reset-all"; tabId: number | null };
@@ -156,6 +164,8 @@ export type ExtensionResponse =
       notificationHistory?: NotificationHistoryEntry[];
       activity?: ActivityEntry[];
       quickTriggers?: string[];
+      profiles?: Profile[];
+      profileMatches?: ProfileMatchResult;
       testResult?: KeywordTestResult;
       message?: string;
     }
@@ -209,6 +219,16 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
     request.type === "quick-trigger:remove"
   ) {
     return typeof request.value === "string";
+  }
+  if (request.type === "profile:create") return Boolean(request.profile);
+  if (request.type === "profile:update") {
+    return typeof request.profileId === "string" && Boolean(request.profile);
+  }
+  if (request.type === "profile:delete" || request.type === "profile:start") {
+    return typeof request.profileId === "string";
+  }
+  if (request.type === "profile:toggle") {
+    return typeof request.profileId === "string" && typeof request.enabled === "boolean";
   }
   return [
     "monitor:get-current",

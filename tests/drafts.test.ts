@@ -16,6 +16,7 @@ function makeDraft(
     pageOrigin: "https://example.com/*",
     savedAt: 1_000,
     reloadConfig: {
+      reloadEnabled: true,
       intervalMs: 60_000,
       bypassCache: true,
       maximumReloads: 5,

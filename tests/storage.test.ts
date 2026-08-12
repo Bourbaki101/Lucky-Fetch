@@ -28,7 +28,8 @@ describe("keyword state persistence migration", () => {
       version: 1,
       monitors: { "1": phaseOneMonitor() }
     });
-    expect(state.version).toBe(5);
+    expect(state.version).toBe(6);
+    expect(state.profiles).toEqual([]);
     expect(state.monitors["1"]?.keywordMonitoring.enabled).toBe(false);
     expect(
       state.monitors["1"]?.keywordMonitoring.notificationMessage
@@ -204,7 +205,7 @@ describe("keyword state persistence migration", () => {
     expect(state.notificationHistory.at(-1)?.id).toBe("notification-2");
   });
 
-  it("normalizes persisted reload intervals and combined monitor delay", () => {
+  it("normalizes persisted reload intervals without silently changing the monitor delay", () => {
     const current = createRunningMonitor(
       { id: 1, title: "Page", url: "https://example.com/" },
       {
@@ -228,7 +229,7 @@ describe("keyword state persistence migration", () => {
       monitors: { "1": current }
     });
     expect(state.monitors["1"]?.intervalMs).toBe(10_000);
-    expect(state.monitors["1"]?.keywordMonitoring.scanDelayMs).toBe(5_000);
+    expect(state.monitors["1"]?.keywordMonitoring.scanDelayMs).toBe(10_000);
   });
 
   it("persists a trimmed, duplicate-free maximum of five Quick Triggers", () => {

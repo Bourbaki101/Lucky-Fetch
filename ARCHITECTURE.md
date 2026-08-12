@@ -45,16 +45,21 @@ Reload Now resets a running monitor's deadline. It preserves Paused/Stopped stat
 
 ```text
 {
-  version: 5,
+  version: 6,
   monitors: {
     "<tabId>": TabMonitor
   },
   notificationHistory: NotificationHistoryEntry[],
-  quickTriggers: string[]
+  quickTriggers: string[],
+  profiles: Profile[]
 }
 ```
 
-A monitor stores tab metadata, reload configuration/count/status, interaction timestamps, typing-protection deadline, an error message, a generated tab-instance token, separate keyword configuration/runtime, and a newest-first capped detection history. Version 1 records migrate locally with keyword monitoring disabled and an unknown baseline. Version 2 single-keyword records migrate to an ordered rule list with a deterministic stable legacy ID and `highlightMatches: false`. Version 4 adds the global notification history. Version 5 adds the deliberately saved, five-item Quick Trigger list. The normalizer accepts versions 1–5 and always emits version 5, making migration idempotent. Valid legacy runtime baselines and detection histories are preserved, reload intervals are clamped to the supported 10-second–30-day range, and enabled monitor delays are capped at half the reload interval.
+A monitor stores tab metadata, reload configuration/count/status, interaction timestamps, typing-protection deadline, an error message, a generated tab-instance token, optional Profile identity, separate keyword configuration/runtime, and a newest-first capped detection history. Version 1 records migrate locally with keyword monitoring disabled and an unknown baseline. Version 2 single-keyword records migrate to an ordered rule list with a deterministic stable legacy ID and `highlightMatches: false`. Version 4 adds the global notification history. Version 5 adds the deliberately saved, five-item Quick Trigger list. Version 6 adds Profiles and explicit reload enablement. The normalizer accepts versions 1–6 and always emits version 6, making migration idempotent. Valid legacy runtime baselines and detection histories are preserved and monitor reload intervals are clamped to the supported 10-second–30-day range. Profile intervals are preserved so a configuration made invalid by newer rules is surfaced instead of silently changed or run.
+
+Profiles are durable combined Reload and Monitor configurations. Exact matching retains sorted query parameters but ignores fragments; Path matching uses the normalized origin and exact normalized path while ignoring query and fragment; Site matching uses the normalized origin. Non-root trailing slashes, hostname casing, and default ports normalize consistently. Exact, Path, and Site have descending specificity. A single most-specific Auto-start match may start; equal-specificity Auto-start matches are a safe conflict and require a user choice. Suggest matches are all returned to the popup.
+
+Profile application calls the same validated monitor start path as manual work. A started monitor records `profileId` and `profileName`. Navigation matching never replaces running or paused work, and seeing the same `profileId` again is idempotent even after the Profile's own reload. This prevents duplicated alarms, scans, notifications, and countdown resets.
 
 Activity is a selector over these same per-tab monitor records. It derives Reload/Monitor flags, attention state, keywords, and remaining time from the existing status, detection runtime, and absolute `nextReloadAt`; it does not persist a parallel activity model. Snapshot requests query current browser tabs and use the normal reset path to remove stale records.
 

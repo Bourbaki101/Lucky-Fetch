@@ -21,8 +21,10 @@ export function createRunningMonitor(
   }
 ): TabMonitor {
   const intervalMs = normalizeIntervalMs(settings.intervalMs);
+  const reloadEnabled = settings.reloadEnabled !== false;
   return {
     ...settings,
+    reloadEnabled,
     intervalMs,
     tabId: tab.id,
     tabInstanceId,
@@ -31,10 +33,12 @@ export function createRunningMonitor(
     reloadCount: 0,
     status: "running",
     lastReloadAt: null,
-    nextReloadAt: now + intervalMs,
+    nextReloadAt: reloadEnabled ? now + intervalMs : null,
     lastUserInteractionAt: null,
     typingProtectionUntil: null,
     errorMessage: null,
+    profileId: null,
+    profileName: null,
     keywordMonitoring,
     keywordRuntime: {
       lastMatchState: null,
@@ -80,7 +84,7 @@ export function resumeMonitor(monitor: TabMonitor, now: number): TabMonitor {
     ...monitor,
     intervalMs,
     status: "running",
-    nextReloadAt: now + intervalMs,
+    nextReloadAt: monitor.reloadEnabled ? now + intervalMs : null,
     typingProtectionUntil: null,
     errorMessage: null,
     updatedAt: now
@@ -129,7 +133,7 @@ export function recordAcceptedReload(
     reloadCount,
     status: completed ? "completed" : "running",
     lastReloadAt: now,
-    nextReloadAt: completed ? null : now + intervalMs,
+    nextReloadAt: completed || !monitor.reloadEnabled ? null : now + intervalMs,
     typingProtectionUntil: null,
     errorMessage: null,
     updatedAt: now
@@ -176,7 +180,9 @@ export function applyInteraction(
       return {
         ...base,
         intervalMs,
-        nextReloadAt: event.occurredAt + intervalMs
+        nextReloadAt: monitor.reloadEnabled
+          ? event.occurredAt + intervalMs
+          : null
       };
       }
     case "pause":

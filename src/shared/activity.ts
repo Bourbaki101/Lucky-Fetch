@@ -1,4 +1,5 @@
 import type { ActivityEntry, TabMonitor } from "../types/monitor";
+import { remainingReloadMs } from "./time";
 
 function hostnameFor(url: string): string {
   try {
@@ -9,23 +10,28 @@ function hostnameFor(url: string): string {
 }
 
 export function getRemainingReloadMs(
-  entry: Pick<ActivityEntry, "reloadActive" | "nextReloadAt">,
+  entry: Pick<ActivityEntry, "reloadActive" | "intervalMs" | "nextReloadAt">,
   now = Date.now()
 ): number | null {
   return entry.reloadActive && entry.nextReloadAt !== null
-    ? Math.max(0, entry.nextReloadAt - now)
+    ? remainingReloadMs(entry.nextReloadAt, entry.intervalMs, now)
     : null;
 }
 
 export function getActiveLuckyFetchTabs(
-  monitors: Iterable<TabMonitor>
+  monitors: Iterable<TabMonitor>,
+  now = Date.now()
 ): ActivityEntry[] {
   const entries: ActivityEntry[] = [];
   for (const monitor of monitors) {
     const reloadActive =
       monitor.status === "running" &&
       monitor.nextReloadAt !== null &&
-      Number.isFinite(monitor.nextReloadAt);
+      remainingReloadMs(
+        monitor.nextReloadAt,
+        monitor.intervalMs,
+        now
+      ) !== null;
     const monitorActive =
       monitor.status === "running" && monitor.keywordMonitoring.enabled;
     const latestDetection = monitor.detectionHistory[0] ?? null;
@@ -44,9 +50,12 @@ export function getActiveLuckyFetchTabs(
       hostname: hostnameFor(monitor.pageUrl),
       reloadActive,
       monitorActive,
+      intervalMs: monitor.intervalMs,
       nextReloadAt: reloadActive ? monitor.nextReloadAt : null,
       keywords: monitor.keywordMonitoring.keywords.map((keyword) => keyword.value),
       monitorStatus: monitor.status,
+      profileId: monitor.profileId,
+      profileName: monitor.profileName,
       monitorState: monitor.keywordRuntime.lastMatchState,
       needsAttention,
       attentionLabel:

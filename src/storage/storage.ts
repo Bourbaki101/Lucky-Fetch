@@ -2,7 +2,7 @@ import {
   NOTIFICATION_HISTORY_LIMIT,
   STORAGE_KEY
 } from "../shared/constants";
-import { getMaxMonitorDelay, normalizeIntervalMs } from "../shared/time";
+import { normalizeIntervalMs } from "../shared/time";
 import { normalizeQuickTriggers } from "../shared/quickTriggers";
 import { validateKeywordConfig } from "../monitoring/matching";
 import {
@@ -15,6 +15,7 @@ import type {
   KeywordMonitoringConfig,
   KeywordMonitoringRuntime,
   PersistedState,
+  Profile,
   NotificationHistoryEntry,
   TabMonitor,
   TypedHighlightError,
@@ -23,10 +24,11 @@ import type {
 import { HIGHLIGHT_ERROR_CODES, MONITOR_ERROR_CODES } from "../types/monitor";
 
 const EMPTY_STATE: PersistedState = {
-  version: 5,
+  version: 6,
   monitors: {},
   notificationHistory: [],
-  quickTriggers: []
+  quickTriggers: [],
+  profiles: []
 };
 
 function legacyKeywordId(value: string): string {
@@ -318,6 +320,10 @@ function normalizeMonitor(value: unknown): TabMonitor | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<TabMonitor>;
   const intervalMs = normalizeIntervalMs(candidate.intervalMs);
+  const reloadEnabled =
+    typeof candidate.reloadEnabled === "boolean"
+      ? candidate.reloadEnabled
+      : true;
   const hadKeywordConfig = candidate.keywordMonitoring !== undefined;
   let keywordMonitoring = createKeywordConfig();
   let configWasCorrupt = false;
@@ -386,12 +392,7 @@ function normalizeMonitor(value: unknown): TabMonitor | null {
         keywords: normalizedSupplied.keywords,
         mode: normalizedSupplied.mode,
         caseSensitive: normalizedSupplied.caseSensitive,
-        scanDelayMs: normalizedSupplied.enabled
-          ? Math.min(
-              normalizedSupplied.scanDelayMs,
-              getMaxMonitorDelay(intervalMs)
-            )
-          : normalizedSupplied.scanDelayMs,
+        scanDelayMs: normalizedSupplied.scanDelayMs,
         actionOnDetection: normalizedSupplied.actionOnDetection,
         highlightMatches: normalizedSupplied.highlightMatches,
         notificationMessage: normalizedSupplied.notificationMessage,
@@ -411,7 +412,16 @@ function normalizeMonitor(value: unknown): TabMonitor | null {
 
   return {
     ...(candidate as TabMonitor),
+    reloadEnabled,
     intervalMs,
+    nextReloadAt:
+      reloadEnabled &&
+      typeof candidate.nextReloadAt === "number" &&
+      Number.isFinite(candidate.nextReloadAt)
+        ? candidate.nextReloadAt
+        : null,
+    profileId: typeof candidate.profileId === "string" ? candidate.profileId : null,
+    profileName: typeof candidate.profileName === "string" ? candidate.profileName : null,
     keywordMonitoring,
     keywordRuntime,
     detectionHistory: Array.isArray(candidate.detectionHistory)
@@ -426,6 +436,68 @@ function normalizeMonitor(value: unknown): TabMonitor | null {
   };
 }
 
+function normalizeProfile(value: unknown): Profile | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<Profile>;
+  const reload = candidate.reloadConfig as Partial<Profile["reloadConfig"]> | undefined;
+  const monitor = candidate.monitorConfig as Partial<Profile["monitorConfig"]> | undefined;
+  if (
+    typeof candidate.id !== "string" || !candidate.id ||
+    typeof candidate.name !== "string" || !candidate.name.trim() ||
+    typeof candidate.enabled !== "boolean" ||
+    !candidate.match || !["exact", "path", "site"].includes(candidate.match.scope) ||
+    typeof candidate.match.url !== "string" ||
+    !["suggest", "auto-start"].includes(candidate.behavior ?? "") ||
+    !reload || typeof reload.intervalMs !== "number" || !Number.isFinite(reload.intervalMs) ||
+    typeof reload.bypassCache !== "boolean" ||
+    !(reload.maximumReloads === null || Number.isInteger(reload.maximumReloads)) ||
+    !["ignore", "delay", "pause", "stop"].includes(reload.interactionBehavior ?? "") ||
+    typeof reload.protectActiveTyping !== "boolean" ||
+    !monitor || typeof monitor.enabled !== "boolean" ||
+    !Array.isArray(monitor.keywords) ||
+    !monitor.keywords.every((keyword) => keyword && typeof keyword.id === "string" && typeof keyword.value === "string") ||
+    !["found", "lost"].includes(monitor.mode ?? "") ||
+    typeof monitor.caseSensitive !== "boolean" ||
+    typeof monitor.scanDelayMs !== "number" || !Number.isFinite(monitor.scanDelayMs) ||
+    !["continue", "pause", "stop"].includes(monitor.actionOnDetection ?? "") ||
+    typeof monitor.highlightMatches !== "boolean" ||
+    typeof monitor.notificationMessage !== "string" ||
+    !["never", "found", "missing", "all"].includes(monitor.bringToFront ?? "") ||
+    !["off", "scroll-highlight", "click", "click-and-focus"].includes(monitor.autoOpenResult ?? "") ||
+    typeof candidate.createdAt !== "number" || !Number.isFinite(candidate.createdAt) ||
+    typeof candidate.updatedAt !== "number" || !Number.isFinite(candidate.updatedAt)
+  ) return null;
+  return {
+    id: candidate.id,
+    name: candidate.name.trim(),
+    enabled: candidate.enabled,
+    match: { scope: candidate.match.scope, url: candidate.match.url },
+    behavior: candidate.behavior!,
+    reloadConfig: {
+      reloadEnabled: typeof reload.reloadEnabled === "boolean" ? reload.reloadEnabled : true,
+      intervalMs: reload.intervalMs,
+      bypassCache: reload.bypassCache,
+      maximumReloads: reload.maximumReloads as number | null,
+      interactionBehavior: reload.interactionBehavior!,
+      protectActiveTyping: reload.protectActiveTyping
+    },
+    monitorConfig: {
+      enabled: monitor.enabled,
+      keywords: monitor.keywords.map((keyword) => ({ id: keyword.id, value: keyword.value.trim() })),
+      mode: monitor.mode!,
+      caseSensitive: monitor.caseSensitive,
+      scanDelayMs: monitor.scanDelayMs,
+      actionOnDetection: monitor.actionOnDetection!,
+      highlightMatches: monitor.highlightMatches,
+      notificationMessage: monitor.notificationMessage,
+      bringToFront: monitor.bringToFront!,
+      autoOpenResult: monitor.autoOpenResult!
+    },
+    createdAt: candidate.createdAt,
+    updatedAt: candidate.updatedAt
+  };
+}
+
 export function normalizePersistedState(value: unknown): PersistedState {
   if (!value || typeof value !== "object") {
     return structuredClone(EMPTY_STATE);
@@ -435,9 +507,10 @@ export function normalizePersistedState(value: unknown): PersistedState {
     monitors?: unknown;
     notificationHistory?: unknown;
     quickTriggers?: unknown;
+    profiles?: unknown;
   };
   if (
-    ![1, 2, 3, 4, 5].includes(Number(candidate.version)) ||
+    ![1, 2, 3, 4, 5, 6].includes(Number(candidate.version)) ||
     !candidate.monitors ||
     typeof candidate.monitors !== "object" ||
     Array.isArray(candidate.monitors)
@@ -460,10 +533,16 @@ export function normalizePersistedState(value: unknown): PersistedState {
         .slice(0, NOTIFICATION_HISTORY_LIMIT)
     : [];
   return {
-    version: 5,
+    version: 6,
     monitors,
     notificationHistory,
-    quickTriggers: normalizeQuickTriggers(candidate.quickTriggers)
+    quickTriggers: normalizeQuickTriggers(candidate.quickTriggers),
+    profiles: Array.isArray(candidate.profiles)
+      ? candidate.profiles
+          .map(normalizeProfile)
+          .filter((profile): profile is Profile => profile !== null)
+          .sort((left, right) => right.updatedAt - left.updatedAt)
+      : []
   };
 }
 

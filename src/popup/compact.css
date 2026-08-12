@@ -2394,3 +2394,353 @@ select:disabled {
     white-space: nowrap;
   }
 }
+
+/* Profiles */
+.popup-tabs {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.popup-tabs button {
+  gap: 3px;
+  padding-right: 2px;
+  padding-left: 2px;
+  font-size: 11.5px;
+}
+
+.popup-tabs button::after {
+  right: 14px;
+  left: 14px;
+}
+
+.section-heading-actions,
+.profile-tab-action-row,
+.profile-dialog-actions,
+.profile-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.section-heading-actions {
+  justify-content: flex-end;
+}
+
+.profile-tab-action-row {
+  justify-content: flex-end;
+  margin-bottom: var(--space-sm);
+}
+
+.profile-save-action {
+  min-height: 30px;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+
+.profile-dialog-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgb(15 23 42 / 44%);
+}
+
+.profile-dialog {
+  width: min(390px, 100%);
+  max-height: calc(100vh - 44px);
+  overflow: auto;
+  padding: var(--space-xl);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-raised);
+  box-shadow: 0 18px 50px rgb(15 23 42 / 24%);
+}
+
+.profile-dialog h2 {
+  margin: 0 0 var(--space-lg);
+  font-size: 17px;
+}
+
+.profile-choice-list {
+  display: grid;
+  gap: 6px;
+}
+
+.profile-choice-list label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.profile-choice-list b,
+.profile-choice-list small {
+  display: block;
+}
+
+.profile-choice-list b {
+  font-size: 11px;
+}
+
+.profile-choice-list small {
+  margin-top: 2px;
+  color: var(--secondary);
+  font-size: 9.5px;
+}
+
+.profile-dialog-actions {
+  justify-content: flex-end;
+  margin-top: var(--space-xl);
+}
+
+.profile-dialog-actions button {
+  min-height: 38px;
+}
+
+.profile-edit-banner,
+.profile-suggestion {
+  margin-bottom: var(--space-md);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
+  border-radius: 11px;
+  background: var(--primary-soft);
+}
+
+.profile-edit-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px var(--space-md);
+}
+
+.profile-editor-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--danger);
+  font-size: 10px;
+}
+
+.profile-dialog-error {
+  margin: var(--space-md) 0 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 10.5px;
+}
+
+.profile-capture-options {
+  margin-top: var(--space-md);
+}
+
+.compact-setting-row {
+  min-height: 50px;
+  padding: 7px 0;
+}
+
+.profile-feature-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.profile-feature-toggle .switch {
+  transform: scale(0.88);
+  transform-origin: right center;
+}
+
+.profile-edit-banner strong,
+.profile-edit-banner span {
+  display: block;
+}
+
+.profile-edit-banner strong {
+  font-size: 10px;
+}
+
+.profile-edit-banner span {
+  overflow: hidden;
+  color: var(--secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-suggestion {
+  padding: 7px var(--space-md);
+}
+
+.profile-suggestion-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.profile-suggestion-row + .profile-suggestion-row {
+  border-top: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border));
+}
+
+.profile-suggestion-row strong,
+.profile-suggestion-row small {
+  display: block;
+}
+
+.profile-suggestion-row strong {
+  font-size: 11px;
+}
+
+.profile-suggestion-row small,
+.profile-conflict-copy {
+  color: var(--secondary);
+  font-size: 9.5px;
+}
+
+.profile-conflict-copy {
+  margin: 2px 0 5px;
+  color: var(--warning);
+}
+
+.profiles-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.profiles-heading h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.profiles-empty {
+  display: grid;
+  min-height: 300px;
+  align-content: center;
+  justify-items: center;
+  text-align: center;
+}
+
+.profiles-empty h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.profiles-empty p {
+  margin: 5px 0 var(--space-md);
+  color: var(--secondary);
+  font-size: 10.5px;
+}
+
+.profile-list {
+  display: grid;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 11px var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: var(--surface-raised);
+}
+
+.profile-list li.profile-disabled {
+  opacity: 0.62;
+}
+
+.profile-row-main {
+  min-width: 0;
+}
+
+.profile-row-main strong,
+.profile-row-main span,
+.profile-row-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-row-main strong {
+  font-size: 12px;
+}
+
+.profile-row-main span,
+.profile-row-main small,
+.profile-row-main p,
+.profile-row-main em {
+  font-size: 9.5px;
+}
+
+.profile-row-main span {
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.profile-row-main small,
+.profile-row-main p {
+  margin-top: 4px;
+  color: var(--secondary);
+}
+
+.profile-row-main p {
+  margin-bottom: 0;
+}
+
+.profile-row-main em {
+  display: block;
+  margin-top: 4px;
+  color: var(--danger);
+  font-style: normal;
+}
+
+.profile-row-actions {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100px;
+}
+
+.profile-row-actions .text-button {
+  min-height: 27px;
+  padding: 0 3px;
+  font-size: 9.5px;
+}
+
+.profile-enabled-toggle .switch {
+  transform: scale(0.82);
+  transform-origin: top right;
+}
+
+.profiles-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.profile-editor-footer .footer-actions {
+  width: auto;
+}
+
+.profile-editor-footer .footer-actions button {
+  min-width: 86px;
+}

@@ -69,17 +69,28 @@ import {
   MAX_HIGHLIGHTS_PER_FRAME,
   MAX_HIGHLIGHT_TEXT_NODES,
   MAX_NOTIFICATION_KEYWORDS,
-  MAX_INTERVAL_MS,
-  MIN_INTERVAL_MS,
   NOTIFICATION_TARGET_PREFIX,
   RECOVERY_RELOAD_DELAY_MS,
   SESSION_TOKEN_PREFIX
 } from "../shared/constants";
+import { validateCombinedConfiguration } from "../shared/configValidation";
+import {
+  createProfile,
+  deleteProfile,
+  resolveProfileMatches,
+  setProfileEnabled,
+  updateProfile,
+  validateProfileInput
+} from "../shared/profiles";
 import {
   addQuickTrigger,
   removeQuickTrigger
 } from "../shared/quickTriggers";
-import { validateMonitorDelayForReload } from "../shared/time";
+import {
+  hasPlausibleReloadDeadline,
+  normalizeIntervalMs,
+  validateMonitorDelayForReload
+} from "../shared/time";
 import {
   clearResolvedMatchTokens,
   resolveMatchedElement as resolveFrameMatchedElements,
@@ -121,6 +132,7 @@ import type {
   MonitorSettings,
   NotificationHistoryEntry,
   PersistedState,
+  Profile,
   ScanResult,
   TabMonitor,
   TabSummary,
@@ -132,10 +144,11 @@ import { isPlausibleMonitor, planRecovery } from "./recovery";
 type InitializationStatus = "starting" | "ready" | "error";
 
 let state: PersistedState = {
-  version: 5,
+  version: 6,
   monitors: {},
   notificationHistory: [],
-  quickTriggers: []
+  quickTriggers: [],
+  profiles: []
 };
 let operationQueue: Promise<unknown> = Promise.resolve();
 let initializationStatus: InitializationStatus = "starting";
@@ -170,32 +183,6 @@ function toTabSummary(tab: chrome.tabs.Tab): TabSummary | null {
     url: tab.url ?? "",
     ...(tab.favIconUrl ? { favIconUrl: tab.favIconUrl } : {})
   };
-}
-
-function validateSettings(settings: MonitorSettings): string | null {
-  if (!Number.isFinite(settings.intervalMs)) return "Enter a valid reload interval.";
-  if (settings.intervalMs < MIN_INTERVAL_MS) {
-    return "Minimum reload interval is 10 seconds.";
-  }
-  if (settings.intervalMs > MAX_INTERVAL_MS) {
-    return "Choose a reload interval of 30 days or less.";
-  }
-  if (
-    settings.maximumReloads !== null &&
-    (!Number.isInteger(settings.maximumReloads) ||
-      settings.maximumReloads < 1 ||
-      settings.maximumReloads > 1_000_000)
-  ) {
-    return "The maximum reload count must be between 1 and 1,000,000.";
-  }
-  if (
-    !["ignore", "delay", "pause", "stop"].includes(
-      settings.interactionBehavior
-    )
-  ) {
-    return "Unknown interaction behavior.";
-  }
-  return null;
 }
 
 interface NotificationTarget {
@@ -1374,11 +1361,19 @@ function countdownBadgeForMonitor(
   if (
     monitor?.status !== "running" ||
     monitor.nextReloadAt === null ||
-    !Number.isFinite(monitor.nextReloadAt)
+    !hasPlausibleReloadDeadline(
+      monitor.nextReloadAt,
+      monitor.intervalMs,
+      now
+    )
   ) {
     return { text: "", color: "#59636e", title: "Lucky Fetch" };
   }
-  return badgeForReloadDeadline(monitor.nextReloadAt, now);
+  return badgeForReloadDeadline(
+    monitor.nextReloadAt,
+    now,
+    monitor.intervalMs
+  );
 }
 
 function stopBadgeCountdownTimer(): void {
@@ -1403,7 +1398,11 @@ async function updateBadgeCountdown(): Promise<boolean> {
     (monitor) =>
       monitor.status === "running" &&
       monitor.nextReloadAt !== null &&
-      Number.isFinite(monitor.nextReloadAt)
+      hasPlausibleReloadDeadline(
+        monitor.nextReloadAt,
+        monitor.intervalMs,
+        now
+      )
   );
   if (!hasRunningCountdown) stopBadgeCountdownTimer();
   return hasRunningCountdown;
@@ -1566,7 +1565,7 @@ async function repairSupersededMonitor(
 
   state = latest;
   if (
-    current?.status === "running" &&
+    current?.status === "running" && current.reloadEnabled &&
     current.nextReloadAt !== null &&
     Number.isFinite(current.nextReloadAt)
   ) {
@@ -1585,7 +1584,7 @@ async function persistMonitor(
 ): Promise<TabMonitor> {
   await saveMonitorRecord(monitor, allowCreate);
 
-  if (monitor.status === "running" && monitor.nextReloadAt !== null) {
+  if (monitor.status === "running" && monitor.reloadEnabled && monitor.nextReloadAt !== null) {
     try {
       await scheduleReload(monitor.tabId, monitor.nextReloadAt);
       if (await repairSupersededMonitor(monitor)) {
@@ -1688,10 +1687,11 @@ async function resetAllMonitors(): Promise<void> {
   const tabIds = [...new Set([...monitorTabIds, ...alarmTabIds])];
 
   state = {
-    version: 5,
+    version: 6,
     monitors: {},
     notificationHistory: latest.notificationHistory,
-    quickTriggers: latest.quickTriggers
+    quickTriggers: latest.quickTriggers,
+    profiles: latest.profiles
   };
   await api("Persist full monitor reset", writeState(state));
 
@@ -1749,10 +1749,11 @@ async function buildDiagnostics(
     stateResult.status === "fulfilled"
       ? stateResult.value
       : {
-          version: 5 as const,
+          version: 6 as const,
           monitors: {},
           notificationHistory: [],
-          quickTriggers: []
+          quickTriggers: [],
+          profiles: []
         };
   const alarms =
     alarmsResult.status === "fulfilled" ? alarmsResult.value : [];
@@ -1781,7 +1782,7 @@ async function buildDiagnostics(
   if (tabResult.status === "rejected") {
     notes.push(`Tab lookup failed: ${errorMessage(tabResult.reason)}`);
   }
-  if (storedMonitor?.status === "running" && !matchingAlarm) {
+  if (storedMonitor?.status === "running" && storedMonitor.reloadEnabled && !matchingAlarm) {
     notes.push("Running monitor has no matching Chromium alarm.");
   }
   if (
@@ -1794,6 +1795,7 @@ async function buildDiagnostics(
   }
   if (
     storedMonitor?.status === "running" &&
+    storedMonitor.reloadEnabled &&
     (storedMonitor.nextReloadAt === null ||
       !Number.isFinite(storedMonitor.nextReloadAt))
   ) {
@@ -1930,14 +1932,20 @@ async function recoverState(): Promise<void> {
       updatedAt: now
     };
     const support = inspectUrl(monitor.pageUrl);
+    const monitorDelayError = validateCombinedConfiguration(
+      monitor,
+      monitor.keywordMonitoring
+    );
     if (!support.supported) {
       monitor = errorMonitor(
         monitor,
         support.reason ?? "This page cannot be monitored.",
         now
       );
+    } else if (monitor.status === "running" && monitorDelayError) {
+      monitor = errorMonitor(monitor, monitorDelayError, now);
     } else if (
-      monitor.status === "running" &&
+      monitor.status === "running" && monitor.reloadEnabled &&
       (monitor.nextReloadAt === null ||
         !Number.isFinite(monitor.nextReloadAt))
     ) {
@@ -1961,6 +1969,25 @@ async function recoverState(): Promise<void> {
         action: "schedule-overdue-near-immediate",
         nextReloadAt: monitor.nextReloadAt
       });
+    } else if (
+      monitor.status === "running" && monitor.reloadEnabled &&
+      monitor.nextReloadAt !== null &&
+      !hasPlausibleReloadDeadline(
+        monitor.nextReloadAt,
+        monitor.intervalMs,
+        now
+      )
+    ) {
+      monitor = {
+        ...monitor,
+        nextReloadAt: now + normalizeIntervalMs(monitor.intervalMs),
+        updatedAt: now
+      };
+      console.info("[monitor:restore]", {
+        tabId: monitor.tabId,
+        action: "reset-stale-future-deadline",
+        nextReloadAt: monitor.nextReloadAt
+      });
     }
 
     recovered[monitorKey(monitor.tabId)] = monitor;
@@ -1977,16 +2004,17 @@ async function recoverState(): Promise<void> {
   }
 
   state = {
-    version: 5,
+    version: 6,
     monitors: recovered,
     notificationHistory: saved.notificationHistory,
-    quickTriggers: saved.quickTriggers
+    quickTriggers: saved.quickTriggers,
+    profiles: saved.profiles
   };
   await persistState();
 
   const alarmsByName = new Map(alarms.map((alarm) => [alarm.name, alarm]));
   for (const monitor of Object.values(recovered)) {
-    if (monitor.status === "running" && monitor.nextReloadAt !== null) {
+    if (monitor.status === "running" && monitor.reloadEnabled && monitor.nextReloadAt !== null) {
       const existing = alarmsByName.get(alarmName(monitor.tabId));
       const alarmMatches =
         existing !== undefined &&
@@ -2020,10 +2048,11 @@ async function recoverState(): Promise<void> {
   }
 
   state = {
-    version: 5,
+    version: 6,
     monitors: recovered,
     notificationHistory: saved.notificationHistory,
-    quickTriggers: saved.quickTriggers
+    quickTriggers: saved.quickTriggers,
+    profiles: saved.profiles
   };
   await persistState();
 
@@ -2031,7 +2060,7 @@ async function recoverState(): Promise<void> {
     Object.values(recovered)
       .filter(
         (monitor) =>
-          monitor.status === "running" && monitor.nextReloadAt !== null
+          monitor.status === "running" && monitor.reloadEnabled && monitor.nextReloadAt !== null
       )
       .map((monitor) => monitor.tabId)
   );
@@ -2108,7 +2137,19 @@ async function ensureRunningSchedule(
   monitor: TabMonitor
 ): Promise<TabMonitor> {
   if (monitor.status !== "running") return monitor;
+  if (!monitor.reloadEnabled) {
+    await bestEffortClearReload(monitor.tabId);
+    await bestEffortBadge(monitor.tabId, monitor);
+    return monitor;
+  }
   const now = Date.now();
+  const monitorDelayError = validateCombinedConfiguration(
+    monitor,
+    monitor.keywordMonitoring
+  );
+  if (monitorDelayError) {
+    return persistMonitor(errorMonitor(monitor, monitorDelayError, now));
+  }
   if (
     monitor.nextReloadAt === null ||
     !Number.isFinite(monitor.nextReloadAt)
@@ -2127,6 +2168,18 @@ async function ensureRunningSchedule(
     current = {
       ...current,
       nextReloadAt: now + RECOVERY_RELOAD_DELAY_MS,
+      updatedAt: now
+    };
+  } else if (
+    !hasPlausibleReloadDeadline(
+      current.nextReloadAt,
+      current.intervalMs,
+      now
+    )
+  ) {
+    current = {
+      ...current,
+      nextReloadAt: now + normalizeIntervalMs(current.intervalMs),
       updatedAt: now
     };
   }
@@ -2153,22 +2206,18 @@ async function ensureRunningSchedule(
 async function startMonitor(
   tabId: number,
   settings: MonitorSettings,
-  keywordMonitoring: KeywordMonitoringConfig
+  keywordMonitoring: KeywordMonitoringConfig,
+  profile: Profile | null = null
 ): Promise<TabMonitor> {
-  const settingsError = validateSettings(settings);
-  if (settingsError) throw new Error(settingsError);
   const normalizedKeywordMonitoring: KeywordMonitoringConfig = {
     ...keywordMonitoring,
     keywords: normalizeKeywordRules(keywordMonitoring.keywords)
   };
-  const keywordError = validateKeywordConfig(normalizedKeywordMonitoring);
-  if (keywordError) throw new Error(keywordError);
-  const monitorDelayError = validateMonitorDelayForReload(
-    settings.intervalMs,
-    normalizedKeywordMonitoring.scanDelayMs,
-    normalizedKeywordMonitoring.enabled
+  const configurationError = validateCombinedConfiguration(
+    settings,
+    normalizedKeywordMonitoring
   );
-  if (monitorDelayError) throw new Error(monitorDelayError);
+  if (configurationError) throw new Error(configurationError);
 
   const tab = await getTab(tabId);
   const summary = toTabSummary(tab);
@@ -2190,6 +2239,11 @@ async function startMonitor(
     token,
     normalizedKeywordMonitoring
   );
+  monitor = {
+    ...monitor,
+    profileId: profile?.id ?? null,
+    profileName: profile?.name ?? null
+  };
   await bestEffortClearScans(tabId);
   bestEffortClearHighlights(tabId);
   await setSessionToken(tabId, token);
@@ -3492,6 +3546,68 @@ async function stopTabActivity(tabId: number): Promise<TabMonitor | null> {
   return monitor;
 }
 
+function profileInput(profile: Profile): Omit<Profile, "id" | "createdAt" | "updatedAt"> {
+  return {
+    name: profile.name,
+    enabled: profile.enabled,
+    match: { ...profile.match },
+    behavior: profile.behavior,
+    reloadConfig: { ...profile.reloadConfig },
+    monitorConfig: {
+      ...profile.monitorConfig,
+      keywords: profile.monitorConfig.keywords.map((keyword) => ({ ...keyword }))
+    }
+  };
+}
+
+async function startSavedProfile(tabId: number, profileId: string): Promise<TabMonitor> {
+  const latest = await api("Read state before starting Profile", readState());
+  state = latest;
+  const profile = latest.profiles.find((candidate) => candidate.id === profileId);
+  if (!profile) throw new Error("Profile was not found.");
+  const error = validateProfileInput(profileInput(profile));
+  if (error) throw new Error(`This Profile is invalid: ${error}`);
+  const tab = await getTab(tabId);
+  if (!resolveProfileMatches([{ ...profile, enabled: true }], tab.url ?? "").matches.length) {
+    throw new Error("This Profile does not match the current page.");
+  }
+  return startMonitor(tabId, profile.reloadConfig, profile.monitorConfig, profile);
+}
+
+async function maybeAutoStartProfile(
+  tabId: number,
+  tab: chrome.tabs.Tab
+): Promise<void> {
+  const pageUrl = tab.url ?? "";
+  const latest = await api("Read Profiles after navigation", readState());
+  state = latest;
+  const resolution = resolveProfileMatches(latest.profiles, pageUrl);
+  const profile = resolution.autoStartProfile;
+  if (!profile) return;
+
+  const current = getMonitor(latest, tabId);
+  if (current?.profileId === profile.id) return;
+  if (current && ["running", "paused"].includes(current.status)) return;
+  const error = validateProfileInput(profileInput(profile));
+  if (error) {
+    console.warn("[profile:auto-start] Invalid Profile was not started.", {
+      tabId,
+      profileId: profile.id,
+      error
+    });
+    return;
+  }
+  if (!(await permissionGranted(pageUrl))) {
+    console.info("[profile:auto-start] Page access is required.", {
+      tabId,
+      profileId: profile.id
+    });
+    return;
+  }
+  await startMonitor(tabId, profile.reloadConfig, profile.monitorConfig, profile);
+  console.info("[profile:auto-start] Profile started.", { tabId, profileId: profile.id });
+}
+
 async function getActivitySnapshot(): Promise<ActivityEntry[]> {
   const [latest, tabs] = await Promise.all([
     api("Read state for Activity", readState()),
@@ -3520,22 +3636,77 @@ async function getActivitySnapshot(): Promise<ActivityEntry[]> {
     }
   }
   state = await api("Refresh state after Activity cleanup", readState());
-  const monitors = Object.values(state.monitors).map((monitor) => {
+  const monitors: TabMonitor[] = [];
+  for (const storedMonitor of Object.values(state.monitors)) {
+    const monitor = storedMonitor.status === "running"
+      ? await ensureRunningSchedule(storedMonitor)
+      : storedMonitor;
     const tab = openTabs.get(monitor.tabId);
-    return tab
+    monitors.push(tab
       ? {
           ...monitor,
           pageTitle: tab.title ?? monitor.pageTitle,
           pageUrl: tab.url ?? monitor.pageUrl
         }
-      : monitor;
-  });
+      : monitor);
+  }
   return getActiveLuckyFetchTabs(monitors);
 }
 
 async function handlePopupRequest(
   request: PopupRequest
 ): Promise<ExtensionResponse> {
+  if ([
+    "profile:create",
+    "profile:update",
+    "profile:delete",
+    "profile:toggle",
+    "profile:start"
+  ].includes(request.type)) {
+    const profileRequest = request as Extract<PopupRequest, { type: `profile:${string}` }>;
+    const latest = await api("Read state before Profile operation", readState());
+    state = latest;
+    if (profileRequest.type === "profile:create") {
+      state.profiles = createProfile(
+        state.profiles,
+        profileRequest.profile,
+        globalThis.crypto.randomUUID()
+      );
+      await persistState();
+    } else if (profileRequest.type === "profile:update") {
+      state.profiles = updateProfile(state.profiles, profileRequest.profileId, profileRequest.profile);
+      await persistState();
+    } else if (profileRequest.type === "profile:delete") {
+      state.profiles = deleteProfile(state.profiles, profileRequest.profileId);
+      await persistState();
+    } else if (profileRequest.type === "profile:toggle") {
+      state.profiles = setProfileEnabled(
+        state.profiles,
+        profileRequest.profileId,
+        profileRequest.enabled
+      );
+      await persistState();
+    }
+    const tab = await getTabIfPresent(profileRequest.tabId);
+    const monitor = getMonitor(state, profileRequest.tabId) ?? null;
+    if (profileRequest.type === "profile:start") {
+      const started = await startSavedProfile(profileRequest.tabId, profileRequest.profileId);
+      return {
+        ok: true,
+        tab: tab ? toTabSummary(tab) : null,
+        monitor: started,
+        profiles: state.profiles,
+        profileMatches: resolveProfileMatches(state.profiles, tab?.url ?? started.pageUrl)
+      };
+    }
+    return {
+      ok: true,
+      tab: tab ? toTabSummary(tab) : null,
+      monitor,
+      profiles: state.profiles,
+      profileMatches: resolveProfileMatches(state.profiles, tab?.url ?? "")
+    };
+  }
   if (request.type === "activity:get") {
     return {
       ok: true,
@@ -3673,7 +3844,12 @@ async function handlePopupRequest(
         tab: current.tab,
         monitor: current.monitor,
         notificationHistory: state.notificationHistory,
-        quickTriggers: state.quickTriggers
+        quickTriggers: state.quickTriggers,
+        profiles: state.profiles,
+        profileMatches: resolveProfileMatches(
+          state.profiles,
+          current.tab.url
+        )
       };
     }
     case "monitor:start": {
@@ -3965,6 +4141,7 @@ async function handlePopupRequest(
       };
     }
   }
+  throw new Error("Unknown popup request.");
 }
 
 async function handleContentRequest(
@@ -4281,6 +4458,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       const current = getMonitor(state, tabId);
       if (!current) {
         if (tab.active) await bestEffortBadge(tabId);
+        if (changeInfo.status === "complete" || (changeInfo.url && tab.status === "complete")) {
+          await maybeAutoStartProfile(tabId, tab);
+        }
         return;
       }
 
@@ -4350,6 +4530,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
             Date.now()
           );
         }
+      }
+      if (
+        (changeInfo.status === "complete" || (changeInfo.url && tab.status === "complete")) &&
+        !["running", "paused"].includes(monitor.status)
+      ) {
+        await maybeAutoStartProfile(tabId, tab);
       }
     });
   });

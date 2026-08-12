@@ -114,7 +114,7 @@ export interface PendingMonitorDraft {
   tabId: number;
   pageOrigin: string;
   savedAt: number;
-  reloadConfig: MonitorSettings;
+  reloadConfig: MonitorSettings & { reloadEnabled: boolean };
   keywordConfig: KeywordMonitoringConfig;
   siteAccessPreference: SiteAccessPreference;
   startState: DraftStartState;
@@ -208,6 +208,7 @@ export interface NotificationHistoryEntry {
 }
 
 export interface MonitorSettings {
+  reloadEnabled?: boolean;
   intervalMs: number;
   bypassCache: boolean;
   maximumReloads: number | null;
@@ -216,6 +217,7 @@ export interface MonitorSettings {
 }
 
 export interface TabMonitor extends MonitorSettings {
+  reloadEnabled: boolean;
   tabId: number;
   tabInstanceId: string;
   pageTitle: string;
@@ -227,6 +229,8 @@ export interface TabMonitor extends MonitorSettings {
   lastUserInteractionAt: number | null;
   typingProtectionUntil: number | null;
   errorMessage: string | null;
+  profileId: string | null;
+  profileName: string | null;
   keywordMonitoring: KeywordMonitoringConfig;
   keywordRuntime: KeywordMonitoringRuntime;
   detectionHistory: DetectionHistoryEntry[];
@@ -234,11 +238,43 @@ export interface TabMonitor extends MonitorSettings {
   updatedAt: number;
 }
 
+export const PROFILE_MATCH_SCOPES = ["exact", "path", "site"] as const;
+export type ProfileMatchScope = (typeof PROFILE_MATCH_SCOPES)[number];
+
+export const PROFILE_BEHAVIORS = ["suggest", "auto-start"] as const;
+export type ProfileBehavior = (typeof PROFILE_BEHAVIORS)[number];
+
+export interface ProfileMatchRule {
+  scope: ProfileMatchScope;
+  url: string;
+}
+
+export interface Profile {
+  id: string;
+  name: string;
+  enabled: boolean;
+  match: ProfileMatchRule;
+  behavior: ProfileBehavior;
+  reloadConfig: MonitorSettings & { reloadEnabled: boolean };
+  monitorConfig: KeywordMonitoringConfig;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type ProfileInput = Omit<Profile, "id" | "createdAt" | "updatedAt">;
+
+export interface ProfileMatchResult {
+  matches: Profile[];
+  autoStartProfile: Profile | null;
+  autoStartConflict: Profile[];
+}
+
 export interface PersistedState {
-  version: 5;
+  version: 6;
   monitors: Record<string, TabMonitor>;
   notificationHistory: NotificationHistoryEntry[];
   quickTriggers: string[];
+  profiles: Profile[];
 }
 
 export interface ActivityEntry {
@@ -248,9 +284,12 @@ export interface ActivityEntry {
   hostname: string;
   reloadActive: boolean;
   monitorActive: boolean;
+  intervalMs: number;
   nextReloadAt: number | null;
   keywords: string[];
   monitorStatus: MonitorStatus;
+  profileId: string | null;
+  profileName: string | null;
   monitorState: boolean | null;
   needsAttention: boolean;
   attentionLabel: string | null;

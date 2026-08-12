@@ -37,11 +37,16 @@ import {
 import type { SiteAccessState } from "../shared/permissions";
 import {
   formatCountdown,
-  remainingMs,
+  remainingReloadMs,
   validateInterval,
   validateMonitorDelayForReload
 } from "../shared/time";
 import { getActiveLuckyFetchTabs, getRemainingReloadMs } from "../shared/activity";
+import {
+  resolveProfileMatches,
+  validateProfileMetadata,
+  validateProfileInput
+} from "../shared/profiles";
 import { inspectUrl } from "../shared/url";
 import {
   clearReload,
@@ -74,6 +79,10 @@ import type {
   MonitorSettings,
   NotificationHistoryEntry,
   PendingMonitorDraft,
+  Profile,
+  ProfileBehavior,
+  ProfileInput,
+  ProfileMatchScope,
   SiteAccessPreference,
   TabMonitor,
   TabSummary
@@ -88,7 +97,9 @@ const PRESETS = [
 
 type PopupPhase = "loading" | "ready" | "unsupported" | "error";
 type ThemePreference = "system" | "light" | "dark";
-type PopupTab = "interval" | "monitor" | "activity" | "notifications";
+type PopupTab = "interval" | "monitor" | "profiles" | "activity" | "notifications";
+type ProfileEditorMode = "creating" | "editing";
+type ProfileDialogMode = "new" | "save-current" | "editor-details";
 
 interface AppShellProps {
   children: ReactNode;
@@ -358,6 +369,46 @@ function matchStateLabel(value: boolean | null): string {
   return value ? "Present" : "Missing";
 }
 
+function compactProfileUrl(profile: Profile): string {
+  try {
+    const url = new URL(profile.match.url);
+    const path = url.pathname === "/" ? "" : url.pathname;
+    return `${url.hostname || "local file"}${path}${profile.match.scope === "exact" ? url.search : ""}`;
+  } catch {
+    return profile.match.url;
+  }
+}
+
+export interface ProfileCaptureAvailability {
+  reloadAvailable: boolean;
+  monitorAvailable: boolean;
+  reloadReason: string | null;
+  monitorReason: string | null;
+}
+
+export function getProfileCaptureAvailability(
+  source: {
+    reloadValid: boolean;
+    monitorEnabled: boolean;
+    monitorValid: boolean;
+  }
+): ProfileCaptureAvailability {
+  const reloadAvailable = source.reloadValid;
+  const monitorAvailable = source.monitorEnabled && source.monitorValid;
+  return {
+    reloadAvailable,
+    monitorAvailable,
+    reloadReason: reloadAvailable
+      ? null
+      : "Fix the Reload configuration before capturing it",
+    monitorReason: monitorAvailable
+      ? null
+      : source.monitorEnabled
+        ? "Fix the Monitor configuration before capturing it"
+        : "No Monitor configuration on this tab"
+  };
+}
+
 export function App() {
   const extensionVersion =
     typeof chrome !== "undefined" && chrome.runtime?.getManifest
@@ -370,6 +421,7 @@ export function App() {
     NotificationHistoryEntry[]
   >([]);
   const [quickTriggers, setQuickTriggers] = useState<string[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [intervalValue, setIntervalValue] = useState("1");
   const [intervalUnit, setIntervalUnit] =
@@ -422,6 +474,20 @@ export function App() {
   const [, setPendingDraft] =
     useState<PendingMonitorDraft | null>(null);
   const [activeTab, setActiveTab] = useState<PopupTab>("interval");
+  const [profileDialogMode, setProfileDialogMode] =
+    useState<ProfileDialogMode | null>(null);
+  const [profileEditorMode, setProfileEditorMode] =
+    useState<ProfileEditorMode | null>(null);
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [profileUrl, setProfileUrl] = useState("");
+  const [profileScope, setProfileScope] = useState<ProfileMatchScope>("exact");
+  const [profileBehavior, setProfileBehavior] = useState<ProfileBehavior>("suggest");
+  const [profileReloadEnabled, setProfileReloadEnabled] = useState(true);
+  const [includeCapturedReload, setIncludeCapturedReload] = useState(false);
+  const [includeCapturedMonitor, setIncludeCapturedMonitor] = useState(false);
+  const [profileDialogError, setProfileDialogError] = useState<string | null>(null);
+  const [profileEditorError, setProfileEditorError] = useState<string | null>(null);
   const [showAccessHelp, setShowAccessHelp] = useState(false);
   const [reloadOptionsOpen, setReloadOptionsOpen] = useState(false);
   const [keywordDraft, setKeywordDraft] = useState("");
@@ -504,9 +570,10 @@ export function App() {
     return validateMonitorDelayForReload(
       intervalValidation.intervalMs,
       keywordConfiguration.scanDelayMs,
-      keywordConfiguration.enabled
+      keywordConfiguration.enabled &&
+        (profileEditorMode === null || profileReloadEnabled)
     );
-  }, [intervalValidation, keywordConfiguration, scanDelaySeconds]);
+  }, [intervalValidation, keywordConfiguration, profileEditorMode, profileReloadEnabled, scanDelaySeconds]);
   const keywordConfigurationDirty =
     monitor !== null &&
     (monitor.keywordMonitoring.enabled !== keywordConfiguration.enabled ||
@@ -529,10 +596,27 @@ export function App() {
         keywordConfiguration.notificationMessage);
 
   const configLocked =
-    monitor?.status === "running" || monitor?.status === "paused";
-  const keywordConfigLocked = monitor?.status === "running";
-  const countdown = remainingMs(monitor?.nextReloadAt ?? null, now);
+    profileEditorMode === null &&
+    (monitor?.status === "running" || monitor?.status === "paused");
+  const keywordConfigLocked =
+    profileEditorMode === null && monitor?.status === "running";
+  const countdown = monitor
+    ? remainingReloadMs(monitor.nextReloadAt, monitor.intervalMs, now)
+    : null;
   const support = tab ? inspectUrl(tab.url) : null;
+  const profileMatches = useMemo(
+    () => resolveProfileMatches(profiles, tab?.url ?? ""),
+    [profiles, tab?.url]
+  );
+  const captureAvailability = useMemo(
+    () =>
+      getProfileCaptureAvailability({
+        reloadValid: intervalValidation.valid && maximumValidation === null,
+        monitorEnabled: keywordEnabled,
+        monitorValid: validateKeywordConfig(keywordConfiguration) === null
+      }),
+    [intervalValidation.valid, keywordConfiguration, keywordEnabled, maximumValidation]
+  );
 
   const hydrateForm = useCallback((
     tabId: number,
@@ -557,6 +641,7 @@ export function App() {
     setMaximumReloads(String(reloadConfig.maximumReloads ?? 5));
     setInteractionBehavior(reloadConfig.interactionBehavior);
     setProtectActiveTyping(reloadConfig.protectActiveTyping);
+    setProfileReloadEnabled(reloadConfig.reloadEnabled !== false);
     setKeywordEnabled(keywordConfig.enabled);
     setKeywords(keywordConfig.keywords.map((keyword) => ({ ...keyword })));
     setKeywordMode(keywordConfig.mode);
@@ -596,6 +681,7 @@ export function App() {
       setNotificationHistory(response.notificationHistory);
     }
     if (response.quickTriggers) setQuickTriggers(response.quickTriggers);
+    if (response.profiles) setProfiles(response.profiles);
     if (response.activity) setActivityEntries(response.activity);
     if (response.monitor) hydrateConfiguration(response.monitor);
   }, [hydrateConfiguration]);
@@ -657,6 +743,7 @@ export function App() {
         setMonitor(durableMonitor);
         setNotificationHistory(durableState.notificationHistory);
         setQuickTriggers(durableState.quickTriggers);
+        setProfiles(durableState.profiles);
         setActivityEntries(
           getActiveLuckyFetchTabs(Object.values(durableState.monitors))
         );
@@ -826,6 +913,7 @@ export function App() {
       const latest = normalizePersistedState(changes[STORAGE_KEY].newValue);
       setNotificationHistory(latest.notificationHistory);
       setQuickTriggers(latest.quickTriggers);
+      setProfiles(latest.profiles);
       setActivityEntries(
         getActiveLuckyFetchTabs(Object.values(latest.monitors))
       );
@@ -914,6 +1002,299 @@ export function App() {
     await runAction({ type: "notifications:clear", tabId: tab.id });
   };
 
+  const currentSettings = (
+    reloadEnabled: boolean
+  ): (MonitorSettings & { reloadEnabled: boolean }) | null => {
+    if (!intervalValidation.valid || maximumValidation) return null;
+    return {
+      reloadEnabled,
+      intervalMs: intervalValidation.intervalMs!,
+      bypassCache,
+      maximumReloads: limitEnabled ? Number(maximumReloads) : null,
+      interactionBehavior,
+      protectActiveTyping
+    };
+  };
+
+  const resetProfileMetadata = (): void => {
+    if (!tab) return;
+    setProfileName(tab.title || pageHost(tab.url));
+    setProfileUrl(tab.url);
+    setProfileScope("exact");
+    setProfileBehavior("suggest");
+  };
+
+  const restoreTabConfiguration = (): void => {
+    if (!tab) return;
+    if (monitor) {
+      hydrateForm(tab.id, monitor, monitor.keywordMonitoring, true);
+    } else {
+      hydrateForm(
+        tab.id,
+        { ...DEFAULT_SETTINGS },
+        { ...DEFAULT_KEYWORD_MONITORING, keywords: [] },
+        true
+      );
+    }
+  };
+
+  const openNewProfileDialog = (): void => {
+    resetProfileMetadata();
+    setProfileDialogError(null);
+    setProfileDialogMode("new");
+  };
+
+  const openSaveCurrentProfileDialog = (): void => {
+    resetProfileMetadata();
+    setIncludeCapturedReload(captureAvailability.reloadAvailable);
+    setIncludeCapturedMonitor(captureAvailability.monitorAvailable);
+    setProfileDialogError(null);
+    setProfileDialogMode("save-current");
+  };
+
+  const openProfileDetailsDialog = (): void => {
+    setProfileDialogError(null);
+    setProfileDialogMode("editor-details");
+  };
+
+  const closeProfileDialog = (): void => {
+    setProfileDialogMode(null);
+    setProfileDialogError(null);
+  };
+
+  const metadataValidationError = (): string | null =>
+    validateProfileMetadata({
+      name: profileName,
+      match: { scope: profileScope, url: profileUrl },
+      behavior: profileBehavior
+    });
+
+  const beginCreatingProfile = (): void => {
+    if (!tab) return;
+    const validationError = metadataValidationError();
+    if (validationError) {
+      setProfileDialogError(validationError);
+      return;
+    }
+    hydrateForm(
+      tab.id,
+      { ...DEFAULT_SETTINGS, reloadEnabled: false },
+      { ...DEFAULT_KEYWORD_MONITORING, keywords: [] },
+      true
+    );
+    setProfileReloadEnabled(false);
+    setProfileEditorMode("creating");
+    setEditingProfileId(null);
+    setProfileEditorError(null);
+    setError(null);
+    closeProfileDialog();
+    setActiveTab("interval");
+  };
+
+  const applyProfileDetails = (): void => {
+    const validationError = metadataValidationError();
+    if (validationError) {
+      setProfileDialogError(validationError);
+      return;
+    }
+    closeProfileDialog();
+  };
+
+  const saveProfileEditor = async (): Promise<void> => {
+    if (!tab || !profileEditorMode) return;
+    const reloadConfig = currentSettings(profileReloadEnabled);
+    if (!reloadConfig) {
+      setProfileEditorError(
+        intervalValidation.error ??
+          maximumValidation ??
+          "Review the Reload configuration."
+      );
+      setActiveTab("interval");
+      return;
+    }
+    const previous = editingProfileId
+      ? profiles.find((profile) => profile.id === editingProfileId)
+      : null;
+    const input: ProfileInput = {
+      name: profileName,
+      enabled: previous?.enabled ?? true,
+      match: { scope: profileScope, url: profileUrl },
+      behavior: profileBehavior,
+      reloadConfig,
+      monitorConfig: keywordConfiguration
+    };
+    const validationError = validateProfileInput(input);
+    if (validationError) {
+      setProfileEditorError(validationError);
+      if (keywordValidation) setActiveTab("monitor");
+      else if (!intervalValidation.valid || maximumValidation) {
+        setActiveTab("interval");
+      }
+      return;
+    }
+    setBusy(true);
+    setProfileEditorError(null);
+    try {
+      const response = await send(
+        profileEditorMode === "editing" && editingProfileId
+          ? {
+              type: "profile:update",
+              tabId: tab.id,
+              profileId: editingProfileId,
+              profile: input
+            }
+          : { type: "profile:create", tabId: tab.id, profile: input }
+      );
+      applyResponse(response);
+      setProfileEditorMode(null);
+      setEditingProfileId(null);
+      setProfileReloadEnabled(true);
+      restoreTabConfiguration();
+      setActiveTab("profiles");
+    } catch (profileError) {
+      setProfileEditorError(errorMessage(profileError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCurrentSetupProfile = async (): Promise<void> => {
+    if (!tab) return;
+    const metadataError = metadataValidationError();
+    if (metadataError) {
+      setProfileDialogError(metadataError);
+      return;
+    }
+    if (!includeCapturedReload && !includeCapturedMonitor) {
+      setProfileDialogError(
+        "Choose an available Reload or Monitor configuration to capture."
+      );
+      return;
+    }
+    if (
+      (includeCapturedReload && !captureAvailability.reloadAvailable) ||
+      (includeCapturedMonitor && !captureAvailability.monitorAvailable)
+    ) {
+      setProfileDialogError(
+        "The selected configuration is no longer available on this tab."
+      );
+      return;
+    }
+    const reloadConfig = currentSettings(includeCapturedReload);
+    if (!reloadConfig) {
+      setProfileDialogError(
+        intervalValidation.error ??
+          maximumValidation ??
+          "Review the Reload configuration."
+      );
+      return;
+    }
+    const input: ProfileInput = {
+      name: profileName,
+      enabled: true,
+      match: { scope: profileScope, url: profileUrl },
+      behavior: profileBehavior,
+      reloadConfig,
+      monitorConfig: {
+        ...keywordConfiguration,
+        enabled: includeCapturedMonitor,
+        keywords: keywordConfiguration.keywords.map((keyword) => ({
+          ...keyword
+        }))
+      }
+    };
+    const validationError = validateProfileInput(input);
+    if (validationError) {
+      setProfileDialogError(validationError);
+      return;
+    }
+    setBusy(true);
+    setProfileDialogError(null);
+    try {
+      const response = await send({
+        type: "profile:create",
+        tabId: tab.id,
+        profile: input
+      });
+      applyResponse(response);
+      closeProfileDialog();
+      setActiveTab("profiles");
+    } catch (profileError) {
+      setProfileDialogError(errorMessage(profileError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const editProfile = (profile: Profile): void => {
+    if (!tab) return;
+    setProfileEditorMode("editing");
+    setEditingProfileId(profile.id);
+    setProfileName(profile.name);
+    setProfileUrl(profile.match.url);
+    setProfileScope(profile.match.scope);
+    setProfileBehavior(profile.behavior);
+    hydrateForm(tab.id, profile.reloadConfig, profile.monitorConfig, true);
+    setProfileReloadEnabled(profile.reloadConfig.reloadEnabled !== false);
+    setProfileEditorError(null);
+    setActiveTab("interval");
+    setError(null);
+  };
+
+  const cancelProfileEditor = (): void => {
+    setProfileEditorMode(null);
+    setEditingProfileId(null);
+    setProfileEditorError(null);
+    setProfileReloadEnabled(true);
+    restoreTabConfiguration();
+  };
+
+  const toggleProfile = async (profile: Profile): Promise<void> => {
+    if (!tab) return;
+    await runAction({
+      type: "profile:toggle",
+      tabId: tab.id,
+      profileId: profile.id,
+      enabled: !profile.enabled
+    });
+  };
+
+  const removeProfile = async (profile: Profile): Promise<void> => {
+    if (!tab || !window.confirm(`Delete “${profile.name}”?`)) return;
+    await runAction({ type: "profile:delete", tabId: tab.id, profileId: profile.id });
+  };
+
+  const startProfile = async (profile: Profile): Promise<void> => {
+    if (!tab) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const supportResult = inspectUrl(tab.url);
+      if (!supportResult.supported) {
+        throw new Error(supportResult.reason ?? "This page cannot be monitored.");
+      }
+      let permissionStatus = await readSitePermissionStatus(tab.url);
+      if (!accessSatisfiesPreference(permissionStatus.state, "site")) {
+        const granted = await chrome.permissions.request({
+          origins: permissionOriginsFor(tab.url, "site")
+        });
+        if (!granted) throw new Error("Page access is required to start this Profile.");
+        permissionStatus = await readSitePermissionStatus(tab.url);
+      }
+      setSiteAccessState(permissionStatus.state);
+      const response = await send({
+        type: "profile:start",
+        tabId: tab.id,
+        profileId: profile.id
+      });
+      applyResponse(response);
+    } catch (profileError) {
+      setError(errorMessage(profileError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const start = async (): Promise<void> => {
     if (
       !tab ||
@@ -923,13 +1304,10 @@ export function App() {
     ) {
       return;
     }
-    const settings: MonitorSettings = {
-      intervalMs: intervalValidation.intervalMs!,
-      bypassCache,
-      maximumReloads: limitEnabled ? Number(maximumReloads) : null,
-      interactionBehavior,
-      protectActiveTyping
-    };
+    const settings = currentSettings(
+      profileEditorMode === null ? true : profileReloadEnabled
+    );
+    if (!settings) return;
     const supportResult = inspectUrl(tab.url);
     if (!supportResult.supported || !supportResult.permissionPattern) {
       setSiteAccessState("unsupported");
@@ -1481,7 +1859,8 @@ export function App() {
           </span>
         )}
       </div>
-      <div className="activity-details">
+        <div className="activity-details">
+          {entry.profileName && <span>Profile: {entry.profileName}</span>}
         {entry.reloadActive && (
           <span className="activity-countdown">
             Reloading in {formatCountdown(getRemainingReloadMs(entry, now))}
@@ -1629,8 +2008,8 @@ export function App() {
             document.getElementById("interval-tab")?.focus();
           } else if (event.key === "ArrowRight") {
             event.preventDefault();
-            setActiveTab("activity");
-            document.getElementById("activity-tab")?.focus();
+            setActiveTab("profiles");
+            document.getElementById("profiles-tab")?.focus();
           } else if (event.key === "End") {
             event.preventDefault();
             setActiveTab("notifications");
@@ -1640,6 +2019,39 @@ export function App() {
       >
         Monitor
         {keywordEnabled && <span className="tab-indicator" aria-label="enabled" />}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        id="profiles-tab"
+        aria-controls="profiles-panel"
+        aria-selected={activeTab === "profiles"}
+        tabIndex={activeTab === "profiles" ? 0 : -1}
+        className={activeTab === "profiles" ? "active" : ""}
+        disabled={phase !== "ready"}
+        onClick={() => setActiveTab("profiles")}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            setActiveTab("monitor");
+            document.getElementById("monitor-tab")?.focus();
+          } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            setActiveTab("activity");
+            document.getElementById("activity-tab")?.focus();
+          } else if (event.key === "Home") {
+            event.preventDefault();
+            setActiveTab("interval");
+            document.getElementById("interval-tab")?.focus();
+          } else if (event.key === "End") {
+            event.preventDefault();
+            setActiveTab("notifications");
+            document.getElementById("notifications-tab")?.focus();
+          }
+        }}
+      >
+        Profiles
+        {profiles.length > 0 && <span className="tab-indicator" aria-label="has profiles" />}
       </button>
       <button
         type="button"
@@ -1654,8 +2066,8 @@ export function App() {
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft") {
             event.preventDefault();
-            setActiveTab("monitor");
-            document.getElementById("monitor-tab")?.focus();
+            setActiveTab("profiles");
+            document.getElementById("profiles-tab")?.focus();
           } else if (event.key === "ArrowRight" || event.key === "End") {
             event.preventDefault();
             setActiveTab("notifications");
@@ -1862,6 +2274,26 @@ export function App() {
       </div>
     </footer>
   ) : recoveryFooter;
+  const profilesFooter = (
+    <footer className="controls app-footer profiles-footer">
+      <div className="footer-status"><span className="status-dot status-dot-neutral" /><span className="status-summary"><strong>{profiles.length} saved Profile{profiles.length === 1 ? "" : "s"}</strong></span></div>
+      <button type="button" className="primary-button compact-button" onClick={openNewProfileDialog}>New Profile</button>
+    </footer>
+  );
+  const profileEditorFooter = (
+    <footer className="controls app-footer profile-editor-footer">
+      <div className="footer-status">
+        <span className="status-dot status-dot-neutral" />
+        <span className="status-summary">
+          <strong>{profileEditorMode === "creating" ? "Creating" : "Editing"} Profile</strong>
+        </span>
+      </div>
+      <div className="footer-actions">
+        <button type="button" className="secondary-button" disabled={busy} onClick={cancelProfileEditor}>Cancel</button>
+        <button type="button" className="primary-button" disabled={busy} onClick={() => void saveProfileEditor()}>Save Profile</button>
+      </div>
+    </footer>
+  );
 
   if (phase === "loading") {
     return (
@@ -2057,7 +2489,17 @@ export function App() {
   }
 
   return (
-    <AppShell header={header} tabs={tabs} footer={readyFooter}>
+    <AppShell
+      header={header}
+      tabs={tabs}
+      footer={
+        profileEditorMode
+          ? profileEditorFooter
+          : activeTab === "profiles"
+            ? profilesFooter
+            : readyFooter
+      }
+    >
       {settingsOpen && (
         <section className="settings-panel" id="popup-settings" aria-label="Settings">
           <div className="settings-panel-heading">
@@ -2257,9 +2699,189 @@ export function App() {
         </section>
       )}
 
+      {profileDialogMode && (
+        <div
+          className="profile-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeProfileDialog();
+          }}
+        >
+          <section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title">
+            <h2 id="profile-dialog-title">
+              {profileDialogMode === "new"
+                ? "New Profile"
+                : profileDialogMode === "save-current"
+                  ? "Save Current Setup"
+                  : "Profile Details"}
+            </h2>
+            <label className="field-label" htmlFor="profile-name">Name</label>
+            <input
+              id="profile-name"
+              className="text-input"
+              value={profileName}
+              autoFocus
+              placeholder="Autotask available tickets"
+              onChange={(event) => {
+                setProfileName(event.target.value);
+                setProfileDialogError(null);
+              }}
+            />
+            <label className="field-label" htmlFor="profile-url">Match URL</label>
+            <input
+              id="profile-url"
+              className="text-input"
+              value={profileUrl}
+              onChange={(event) => {
+                setProfileUrl(event.target.value);
+                setProfileDialogError(null);
+              }}
+            />
+            <span className="field-label">Applies to</span>
+            <div className="profile-choice-list">
+              {([
+                ["exact", "Exact page", "Keeps meaningful query parameters."],
+                ["path", "This path", "Same site and path; ignores query and fragment."],
+                ["site", "This site", "Broadest: every page on this origin."]
+              ] as const).map(([scope, label, description]) => (
+                <label key={scope}>
+                  <input type="radio" name="profile-scope" checked={profileScope === scope} onChange={() => {
+                    setProfileScope(scope);
+                    setProfileDialogError(null);
+                  }} />
+                  <span><b>{label}</b><small>{description}</small></span>
+                </label>
+              ))}
+            </div>
+            <span className="field-label">Behavior</span>
+            <div className="segmented-control">
+              {(["suggest", "auto-start"] as const).map((behavior) => (
+                <button
+                  type="button"
+                  key={behavior}
+                  className={profileBehavior === behavior ? "selected" : ""}
+                  aria-pressed={profileBehavior === behavior}
+                  onClick={() => {
+                    setProfileBehavior(behavior);
+                    setProfileDialogError(null);
+                  }}
+                >
+                  {behavior === "suggest" ? "Suggest" : "Auto-start"}
+                </button>
+              ))}
+            </div>
+            {profileDialogMode === "save-current" && (
+              <div className="profile-capture-options">
+                <span className="field-label">Include current setup</span>
+                <div className="setting-row compact-setting-row">
+                  <div>
+                    <label htmlFor="capture-reload">Reload</label>
+                    {!captureAvailability.reloadAvailable && (
+                      <p>{captureAvailability.reloadReason}</p>
+                    )}
+                  </div>
+                  <input
+                    id="capture-reload"
+                    type="checkbox"
+                    className="switch"
+                    checked={includeCapturedReload}
+                    disabled={!captureAvailability.reloadAvailable}
+                    onChange={(event) => {
+                      setIncludeCapturedReload(event.target.checked);
+                      setProfileDialogError(null);
+                    }}
+                  />
+                </div>
+                <div className="setting-row compact-setting-row">
+                  <div>
+                    <label htmlFor="capture-monitor">Monitor</label>
+                    {!captureAvailability.monitorAvailable && (
+                      <p>{captureAvailability.monitorReason}</p>
+                    )}
+                  </div>
+                  <input
+                    id="capture-monitor"
+                    type="checkbox"
+                    className="switch"
+                    checked={includeCapturedMonitor}
+                    disabled={!captureAvailability.monitorAvailable}
+                    onChange={(event) => {
+                      setIncludeCapturedMonitor(event.target.checked);
+                      setProfileDialogError(null);
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+            {profileDialogError && (
+              <p className="profile-dialog-error" role="alert">{profileDialogError}</p>
+            )}
+            <div className="profile-dialog-actions">
+              <button type="button" className="secondary-button" disabled={busy} onClick={closeProfileDialog}>Cancel</button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={
+                  busy ||
+                  (profileDialogMode === "save-current" &&
+                    !includeCapturedReload &&
+                    !includeCapturedMonitor)
+                }
+                onClick={() => {
+                  if (profileDialogMode === "new") beginCreatingProfile();
+                  else if (profileDialogMode === "save-current") {
+                    void saveCurrentSetupProfile();
+                  } else applyProfileDetails();
+                }}
+              >
+                {profileDialogMode === "new"
+                  ? "Create & Configure"
+                  : profileDialogMode === "save-current"
+                    ? "Save Profile"
+                    : "Apply Details"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
+      {profileEditorMode && (
+        <section className="profile-edit-banner" role="status">
+          <div>
+            <strong>{profileEditorMode === "creating" ? "Creating Profile" : "Editing Profile"}</strong>
+            <span>{profileName}</span>
+          </div>
+          <button type="button" className="text-button" onClick={openProfileDetailsDialog}>Details</button>
+          <button type="button" className="text-button" disabled={busy} onClick={() => void saveProfileEditor()}>Save Profile</button>
+          <button type="button" className="text-button" disabled={busy} onClick={cancelProfileEditor}>Cancel</button>
+          {profileEditorError && (
+            <p className="profile-editor-error" role="alert">{profileEditorError}</p>
+          )}
+        </section>
+      )}
 
-      {activeTab === "interval" &&
+      {!profileEditorMode && activeTab !== "profiles" && profileMatches.matches.some((profile) => profile.id !== monitor?.profileId) && (
+        <section className="profile-suggestion" aria-label="Matching Profiles">
+          {profileMatches.autoStartConflict.length > 1 && (
+            <p className="profile-conflict-copy">Multiple equally specific Auto-start Profiles match. Choose one to start.</p>
+          )}
+          {profileMatches.matches
+            .filter((profile) => profile.id !== monitor?.profileId)
+            .map((profile) => (
+              <div className="profile-suggestion-row" key={profile.id}>
+                <div><strong>{profile.name}</strong><small>{profile.behavior === "suggest" ? "Profile available" : "Auto-start Profile matched"}</small></div>
+                <button
+                  type="button"
+                  className="primary-button compact-button"
+                  disabled={busy || Boolean(monitor && ["running", "paused"].includes(monitor.status))}
+                  onClick={() => void startProfile(profile)}
+                >Start</button>
+              </div>
+            ))}
+        </section>
+      )}
+
+      {!profileEditorMode && activeTab === "interval" &&
         !["granted-site", "granted-all"].includes(siteAccessState) && (
         <section className="permission-banner" role="status">
           <span className="permission-icon" aria-hidden="true">!</span>
@@ -2291,10 +2913,37 @@ export function App() {
             <span className="section-kicker">Refresh interval</span>
             <h2 id="configuration-heading">Choose how often to reload</h2>
           </div>
-          {configLocked && <span className="locked-pill">Locked while active</span>}
+          <div className="section-heading-actions">
+            {configLocked && <span className="locked-pill">Locked while active</span>}
+            {profileEditorMode ? (
+              <label className="profile-feature-toggle" htmlFor="profile-reload-enabled">
+                <span>Reload</span>
+                <input
+                  id="profile-reload-enabled"
+                  type="checkbox"
+                  className="switch"
+                  checked={profileReloadEnabled}
+                  onChange={(event) => {
+                    setProfileReloadEnabled(event.target.checked);
+                    setProfileEditorError(null);
+                  }}
+                />
+              </label>
+            ) : (
+              <button type="button" className="text-button profile-save-action" onClick={openSaveCurrentProfileDialog}>
+                Save current setup as Profile
+              </button>
+            )}
+          </div>
         </div>
 
-        <fieldset disabled={configLocked || busy}>
+        <fieldset
+          disabled={
+            configLocked ||
+            busy ||
+            (profileEditorMode !== null && !profileReloadEnabled)
+          }
+        >
           <legend className="sr-only">Reload interval</legend>
           <div className="interval-card-heading">
             <label htmlFor="interval-value">Interval</label>
@@ -2496,6 +3145,13 @@ export function App() {
         hidden={activeTab !== "monitor"}
         className="configuration keyword-monitoring tab-panel"
       >
+        {!profileEditorMode && (
+          <div className="profile-tab-action-row">
+            <button type="button" className="text-button profile-save-action" onClick={openSaveCurrentProfileDialog}>
+              Save current setup as Profile
+            </button>
+          </div>
+        )}
         <div className="feature-header">
           <div className="feature-disclosure">
             <span className="accordion-copy">
@@ -2515,6 +3171,7 @@ export function App() {
               onChange={(event) => {
                 const enabled = event.target.checked;
                 setKeywordEnabled(enabled);
+                if (profileEditorMode) setProfileEditorError(null);
                 if (!enabled) {
                   setKeywords((current) =>
                     current.filter((keyword) => keyword.value.trim())
@@ -2944,7 +3601,7 @@ export function App() {
         </div>
         </div>
 
-        {monitor && (
+        {monitor && !profileEditorMode && (
           <div className="monitor-section activity-section">
             <button
               type="button"
@@ -3116,6 +3773,65 @@ export function App() {
       </section>
 
       <section
+        id="profiles-panel"
+        role="tabpanel"
+        aria-labelledby="profiles-tab"
+        hidden={activeTab !== "profiles"}
+        className="tab-panel profiles-panel"
+      >
+        <div className="profiles-heading">
+          <div><span className="section-kicker">Saved automation</span><h2>Profiles</h2></div>
+        </div>
+        {profiles.length === 0 ? (
+          <div className="profiles-empty">
+            <h3>No Profiles yet</h3>
+            <p>Save the current Reload and Monitor setup for this page.</p>
+            <button type="button" className="primary-button compact-button" onClick={openSaveCurrentProfileDialog}>Save current setup</button>
+          </div>
+        ) : (
+          <ul className="profile-list">
+            {profiles.map((profile) => {
+              const invalid = validateProfileInput({
+                name: profile.name,
+                enabled: profile.enabled,
+                match: profile.match,
+                behavior: profile.behavior,
+                reloadConfig: profile.reloadConfig,
+                monitorConfig: profile.monitorConfig
+              });
+              return (
+                <li className={!profile.enabled ? "profile-disabled" : ""} key={profile.id}>
+                  <div className="profile-row-main">
+                    <strong>{profile.name}</strong>
+                    <span title={profile.match.url}>{compactProfileUrl(profile)}</span>
+                    <small>
+                      {profile.match.scope === "exact" ? "Exact page" : profile.match.scope === "path" ? "This path" : "This site"}
+                      {" · "}{profile.behavior === "suggest" ? "Suggest" : "Auto-start"}
+                    </small>
+                    <p>
+                      {profile.reloadConfig.reloadEnabled !== false ? `↻ ${Math.round(profile.reloadConfig.intervalMs / 1_000)}s` : "Reload off"}
+                      {" · "}
+                      {profile.monitorConfig.enabled
+                        ? `Monitor ${profile.monitorConfig.keywords.map((keyword) => keyword.value).join(", ")}`
+                        : "Monitor off"}
+                    </p>
+                    {invalid && <em>Invalid: {invalid}</em>}
+                  </div>
+                  <div className="profile-row-actions">
+                    <label className="profile-enabled-toggle" title={profile.enabled ? "Disable Profile" : "Enable Profile"}>
+                      <input type="checkbox" className="switch" checked={profile.enabled} disabled={busy} onChange={() => void toggleProfile(profile)} />
+                    </label>
+                    <button type="button" className="text-button" disabled={busy} onClick={() => editProfile(profile)}>Edit</button>
+                    <button type="button" className="text-button danger-text" disabled={busy} onClick={() => void removeProfile(profile)}>Delete</button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <section
         id="activity-panel"
         role="tabpanel"
         aria-labelledby="activity-tab"
@@ -3233,7 +3949,7 @@ export function App() {
         )}
       </section>
 
-      {error && (
+      {error && !profileDialogMode && (
         <div className="error-banner" role="alert">
           <span aria-hidden="true">!</span>
           <p>{error}</p>
@@ -3244,7 +3960,7 @@ export function App() {
       )}
 
       <div className="utility-actions">
-        {monitor && (
+        {monitor && !profileEditorMode && (
           <button
             type="button"
             className="text-button danger-text"

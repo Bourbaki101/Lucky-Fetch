@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AppShell, recordLogoClick } from "../src/popup/App";
+import {
+  AppShell,
+  getProfileCaptureAvailability,
+  recordLogoClick
+} from "../src/popup/App";
 
 describe("popup shell", () => {
   it("triggers the logo easter egg only on three clicks inside the local window", () => {
@@ -136,5 +140,78 @@ describe("popup shell", () => {
     expect(source).toContain('{ label: "1 min"');
     expect(source).toContain('{ label: "5 min"');
     expect(source).not.toContain('{ label: "15 min"');
+  });
+
+  it("renders Reload, Monitor, Profiles, Activity, and Notifications in order while keeping Settings in the header", () => {
+    const source = readFileSync(
+      new URL("../src/popup/App.tsx", import.meta.url),
+      "utf8"
+    );
+    const reload = source.indexOf('id="interval-tab"');
+    const monitor = source.indexOf('id="monitor-tab"');
+    const profiles = source.indexOf('id="profiles-tab"');
+    const activity = source.indexOf('id="activity-tab"');
+    const notifications = source.indexOf('id="notifications-tab"');
+    expect(reload).toBeGreaterThan(-1);
+    expect(monitor).toBeGreaterThan(reload);
+    expect(profiles).toBeGreaterThan(monitor);
+    expect(activity).toBeGreaterThan(profiles);
+    expect(notifications).toBeGreaterThan(activity);
+    expect(source).toContain('className="icon-button settings-button"');
+    expect(source).not.toContain('id="settings-tab"');
+    expect(source).toContain("Save current setup as Profile");
+    expect(source).toContain("Create & Configure");
+    expect(source).toContain("Creating Profile");
+    expect(source).toContain("Editing Profile");
+    expect(source).toContain("New Profile");
+    expect(source).not.toContain(">New</button>");
+    expect(source).toContain("Exact page");
+    expect(source).toContain("Auto-start");
+  });
+
+  it("only offers valid current form configurations for Profile capture", () => {
+    expect(getProfileCaptureAvailability({
+      reloadValid: true,
+      monitorEnabled: false,
+      monitorValid: true
+    })).toEqual({
+      reloadAvailable: true,
+      monitorAvailable: false,
+      reloadReason: null,
+      monitorReason: "No Monitor configuration on this tab"
+    });
+
+    expect(getProfileCaptureAvailability({
+      reloadValid: false,
+      monitorEnabled: true,
+      monitorValid: false
+    })).toEqual({
+      reloadAvailable: false,
+      monitorAvailable: false,
+      reloadReason: "Fix the Reload configuration before capturing it",
+      monitorReason: "Fix the Monitor configuration before capturing it"
+    });
+
+    expect(getProfileCaptureAvailability({
+      reloadValid: true,
+      monitorEnabled: true,
+      monitorValid: true
+    })).toMatchObject({ reloadAvailable: true, monitorAvailable: true });
+  });
+
+  it("keeps Profile metadata dialogs separate from the canonical configuration editor", () => {
+    const source = readFileSync(
+      new URL("../src/popup/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    expect(source).toContain('profileDialogMode === "save-current"');
+    expect(source).toContain('className="profile-capture-options"');
+    expect(source).toContain('className="switch"');
+    expect(source).toContain("profileEditorFooter");
+    expect(source).toContain("profileDialogError");
+    expect(source).toContain("profileEditorError");
+    expect(source).toContain("error && !profileDialogMode");
+    expect(source).not.toContain("profile-component-toggles");
   });
 });

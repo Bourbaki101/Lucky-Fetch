@@ -12,6 +12,7 @@ function monitor(overrides: Partial<TabMonitor> = {}): TabMonitor {
     tabInstanceId: "instance-1",
     pageTitle: "Example",
     pageUrl: "https://example.com/tickets",
+    reloadEnabled: true,
     intervalMs: 10_000,
     bypassCache: false,
     maximumReloads: null,
@@ -24,6 +25,8 @@ function monitor(overrides: Partial<TabMonitor> = {}): TabMonitor {
     lastUserInteractionAt: null,
     typingProtectionUntil: null,
     errorMessage: null,
+    profileId: null,
+    profileName: null,
     keywordMonitoring: createKeywordConfig(),
     keywordRuntime: createKeywordRuntime(),
     detectionHistory: [],
@@ -81,6 +84,13 @@ describe("Activity selectors", () => {
     const entry = getActiveLuckyFetchTabs([monitor()])[0]!;
     expect(getRemainingReloadMs(entry, 103_000)).toBe(7_000);
     expect(getRemainingReloadMs(entry, 111_000)).toBe(0);
+  });
+
+  it("does not expose an impossible stale countdown as active reload work", () => {
+    const entries = getActiveLuckyFetchTabs([
+      monitor({ intervalMs: 14_000, nextReloadAt: 999_000 })
+    ], 100_000);
+    expect(entries).toEqual([]);
   });
 
   it("surfaces an existing detection as Needs Attention without a new state machine", () => {

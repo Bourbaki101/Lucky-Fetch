@@ -1,5 +1,5 @@
 import type { TabMonitor } from "../types/monitor";
-import { formatDuration, remainingMs } from "./time";
+import { formatDuration, remainingReloadMs } from "./time";
 
 export interface BadgePresentation {
   text: string;
@@ -8,14 +8,19 @@ export interface BadgePresentation {
 }
 
 export function nearestActiveReloadAt(
-  monitors: Iterable<TabMonitor>
+  monitors: Iterable<TabMonitor>,
+  now = Date.now()
 ): number | null {
   let nearest: number | null = null;
   for (const monitor of monitors) {
     if (
       monitor.status !== "running" ||
       monitor.nextReloadAt === null ||
-      !Number.isFinite(monitor.nextReloadAt)
+      remainingReloadMs(
+        monitor.nextReloadAt,
+        monitor.intervalMs,
+        now
+      ) === null
     ) {
       continue;
     }
@@ -29,9 +34,15 @@ export function nearestActiveReloadAt(
 
 export function badgeForReloadDeadline(
   nextReloadAt: number,
-  now = Date.now()
+  now = Date.now(),
+  intervalMs?: number
 ): BadgePresentation {
-  const remaining = Math.max(0, nextReloadAt - now);
+  const remaining = intervalMs === undefined
+    ? (Number.isFinite(nextReloadAt) ? Math.max(0, nextReloadAt - now) : null)
+    : remainingReloadMs(nextReloadAt, intervalMs, now);
+  if (remaining === null) {
+    return { text: "", color: "#59636e", title: "Lucky Fetch" };
+  }
   const remainingSeconds = Math.max(0, Math.ceil(remaining / 1_000));
   const duration = formatDuration(remaining);
   return {
@@ -64,9 +75,16 @@ export function badgeForMonitor(
   if (monitor.status === "error") {
     return { text: "!", color: "#b42318", title: "Lucky Fetch: error" };
   }
+  if (monitor.nextReloadAt === null) {
+    return { text: "ON", color: "#2563eb", title: "Lucky Fetch: running" };
+  }
 
-  const remaining = remainingMs(monitor.nextReloadAt, now);
+  const remaining = remainingReloadMs(
+    monitor.nextReloadAt,
+    monitor.intervalMs,
+    now
+  );
   return remaining === null
-    ? { text: "ON", color: "#2563eb", title: "Lucky Fetch: running" }
-    : badgeForReloadDeadline(monitor.nextReloadAt!, now);
+    ? { text: "", color: "#59636e", title: "Lucky Fetch" }
+    : badgeForReloadDeadline(monitor.nextReloadAt, now, monitor.intervalMs);
 }

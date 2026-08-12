@@ -13,6 +13,7 @@ import {
   getMaxMonitorDelay,
   intervalToMs,
   remainingMs,
+  remainingReloadMs,
   validateInterval,
   validateMonitorDelayForReload
 } from "../src/shared/time";
@@ -23,6 +24,7 @@ const monitor = (overrides: Partial<TabMonitor> = {}): TabMonitor => ({
   tabInstanceId: "instance",
   pageTitle: "Example",
   pageUrl: "https://example.com/",
+  reloadEnabled: true,
   intervalMs: 60_000,
   bypassCache: false,
   maximumReloads: null,
@@ -34,7 +36,9 @@ const monitor = (overrides: Partial<TabMonitor> = {}): TabMonitor => ({
   nextReloadAt: 160_000,
   lastUserInteractionAt: null,
   typingProtectionUntil: null,
-  errorMessage: null,
+    errorMessage: null,
+    profileId: null,
+    profileName: null,
   keywordMonitoring: createKeywordConfig(),
   keywordRuntime: createKeywordRuntime(),
   detectionHistory: [],
@@ -71,11 +75,38 @@ describe("time helpers", () => {
     expect(validateMonitorDelayForReload(10_000, 60_000, false)).toBeNull();
   });
 
+  it("uses the normalized custom reload interval and floors odd seconds", () => {
+    expect(getMaxMonitorDelay(14_000)).toBe(7_000);
+    expect(validateMonitorDelayForReload(14_000, 7_000, true)).toBeNull();
+    expect(validateMonitorDelayForReload(14_000, 8_000, true)).toBe(
+      "Monitor delay must be 7 seconds or less with a 14-second reload interval."
+    );
+    expect(validateMonitorDelayForReload(14_000, 16_000, true)).not.toBeNull();
+    expect(getMaxMonitorDelay(17_000)).toBe(8_000);
+    expect(validateMonitorDelayForReload(17_000, 8_000, true)).toBeNull();
+    expect(validateMonitorDelayForReload(17_000, 9_000, true)).not.toBeNull();
+    expect(getMaxMonitorDelay(25_000)).toBe(12_000);
+  });
+
+  it("revalidates the same delay when the effective reload interval changes", () => {
+    expect(validateMonitorDelayForReload(30_000, 10_000, true)).toBeNull();
+    expect(validateMonitorDelayForReload(14_000, 10_000, true)).toBe(
+      "Monitor delay must be 7 seconds or less with a 14-second reload interval."
+    );
+  });
+
   it("calculates remaining time from the absolute timestamp", () => {
     expect(remainingMs(10_000, 7_500)).toBe(2_500);
     expect(remainingMs(10_000, 12_000)).toBe(0);
     expect(remainingMs(null, 12_000)).toBeNull();
     expect(formatCountdown(65_000)).toBe("1:05");
+    expect(formatCountdown(Number.NaN)).toBe("—");
+    expect(formatCountdown(-1_000)).toBe("0:00");
+  });
+
+  it("rejects a deadline that cannot belong to the effective reload schedule", () => {
+    expect(remainingReloadMs(114_000, 14_000, 100_000)).toBe(14_000);
+    expect(remainingReloadMs(999_000, 14_000, 100_000)).toBeNull();
   });
 });
 
@@ -84,9 +115,10 @@ describe("badge formatting", () => {
     expect(badgeForMonitor(monitor(), 115_000).text).toBe("45");
     expect(
       badgeForMonitor(monitor({ nextReloadAt: 280_000 }), 100_000).text
-    ).toBe("180");
+    ).toBe("");
     expect(badgeForMonitor(monitor({ status: "paused" })).text).toBe("Ⅱ");
     expect(badgeForMonitor(monitor({ status: "error" })).text).toBe("!");
+    expect(badgeForMonitor(monitor({ nextReloadAt: null })).text).toBe("ON");
     expect(badgeForMonitor(undefined).text).toBe("");
   });
 
@@ -103,12 +135,17 @@ describe("badge formatting", () => {
         monitor({ tabId: 1, nextReloadAt: 160_000 }),
         monitor({ tabId: 2, nextReloadAt: 130_000 }),
         monitor({ tabId: 3, status: "paused", nextReloadAt: 120_000 })
-      ])
+      ], 100_000)
     ).toBe(130_000);
     expect(
       nearestActiveReloadAt([
         monitor({ status: "stopped", nextReloadAt: null })
-      ])
+      ], 100_000)
+    ).toBeNull();
+    expect(
+      nearestActiveReloadAt([
+        monitor({ intervalMs: 14_000, nextReloadAt: 999_000 })
+      ], 100_000)
     ).toBeNull();
   });
 });

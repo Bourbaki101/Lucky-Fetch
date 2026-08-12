@@ -39,6 +39,7 @@ export const ALL_WEBSITE_PERMISSION_PATTERNS = [
 ] as const;
 
 export const DEFAULT_SETTINGS = {
+  reloadEnabled: true,
   intervalMs: 60_000,
   bypassCache: false,
   maximumReloads: null,

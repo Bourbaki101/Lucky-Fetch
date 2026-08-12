@@ -70,6 +70,19 @@ describe("monitor state transitions", () => {
     expect(paused.nextReloadAt).toBeNull();
     expect(paused.reloadCount).toBe(1);
   });
+
+  it("keeps a monitor-only run free of reload deadlines", () => {
+    const started = create({ reloadEnabled: false, interactionBehavior: "delay" });
+    expect(started.status).toBe("running");
+    expect(started.nextReloadAt).toBeNull();
+    const interacted = applyInteraction(started, {
+      kind: "input",
+      occurredAt: 110_000,
+      activeTyping: true
+    });
+    expect(interacted.nextReloadAt).toBeNull();
+    expect(resumeMonitor(pauseMonitor(interacted, 120_000), 130_000).nextReloadAt).toBeNull();
+  });
 });
 
 describe("interaction decisions", () => {

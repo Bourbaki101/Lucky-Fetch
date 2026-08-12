@@ -84,6 +84,7 @@ function isReloadConfig(value: unknown): value is MonitorSettings {
   if (!value || typeof value !== "object") return false;
   const config = value as Partial<MonitorSettings>;
   return (
+    (config.reloadEnabled === undefined || typeof config.reloadEnabled === "boolean") &&
     Number.isFinite(config.intervalMs) &&
     (config.intervalMs ?? 0) >= MIN_INTERVAL_MS &&
     (config.intervalMs ?? 0) <= MAX_INTERVAL_MS &&
@@ -104,6 +105,9 @@ export function normalizeMonitorDraft(
 ): PendingMonitorDraft | null {
   if (!value || typeof value !== "object") return null;
   const draft = value as Partial<PendingMonitorDraft>;
+  const reloadConfig = draft.reloadConfig && isReloadConfig(draft.reloadConfig)
+    ? { ...draft.reloadConfig, reloadEnabled: draft.reloadConfig.reloadEnabled ?? true }
+    : null;
   const keywordConfig = normalizeDraftKeywordConfig(draft.keywordConfig);
   const preference: SiteAccessPreference | undefined =
     draft.siteAccessPreference;
@@ -116,10 +120,10 @@ export function normalizeMonitorDraft(
     draft.pageOrigin.length === 0 ||
     typeof draft.savedAt !== "number" ||
     !Number.isFinite(draft.savedAt) ||
-    !isReloadConfig(draft.reloadConfig) ||
+    !reloadConfig ||
     !keywordConfig ||
     validateMonitorDelayForReload(
-      draft.reloadConfig.intervalMs,
+      reloadConfig.intervalMs,
       keywordConfig.scanDelayMs,
       keywordConfig.enabled
     ) !== null ||
@@ -133,7 +137,7 @@ export function normalizeMonitorDraft(
     tabId: draft.tabId!,
     pageOrigin: draft.pageOrigin,
     savedAt: draft.savedAt,
-    reloadConfig: { ...draft.reloadConfig },
+    reloadConfig,
     keywordConfig: {
       ...keywordConfig,
       keywords: keywordConfig.keywords.map((keyword) => ({ ...keyword }))
