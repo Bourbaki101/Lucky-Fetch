@@ -4,6 +4,7 @@ import {
   MIN_INTERVAL_MS,
   MONITOR_DRAFTS_STORAGE_KEY
 } from "../shared/constants";
+import { validateMonitorDelayForReload } from "../shared/time";
 import type {
   DraftStartState,
   MonitorSettings,
@@ -117,6 +118,11 @@ export function normalizeMonitorDraft(
     !Number.isFinite(draft.savedAt) ||
     !isReloadConfig(draft.reloadConfig) ||
     !keywordConfig ||
+    validateMonitorDelayForReload(
+      draft.reloadConfig.intervalMs,
+      keywordConfig.scanDelayMs,
+      keywordConfig.enabled
+    ) !== null ||
     !["site", "all"].includes(preference ?? "") ||
     !["pending", "requesting", "denied", "error"].includes(startState ?? "")
   ) {

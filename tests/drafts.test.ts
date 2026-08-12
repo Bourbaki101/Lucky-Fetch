@@ -92,6 +92,25 @@ describe("pending monitor drafts", () => {
     ).toBeNull();
   });
 
+  it("rejects a combined monitor delay above half the reload interval", () => {
+    expect(
+      normalizeMonitorDraft(
+        makeDraft({
+          reloadConfig: { ...makeDraft().reloadConfig, intervalMs: 10_000 },
+          keywordConfig: { ...makeDraft().keywordConfig, scanDelayMs: 5_001 }
+        })
+      )
+    ).toBeNull();
+    expect(
+      normalizeMonitorDraft(
+        makeDraft({
+          reloadConfig: { ...makeDraft().reloadConfig, intervalMs: 10_000 },
+          keywordConfig: { ...makeDraft().keywordConfig, scanDelayMs: 5_000 }
+        })
+      )
+    ).not.toBeNull();
+  });
+
   it("removes only the explicitly discarded tab draft", async () => {
     installStorageMock();
     await writeMonitorDraft(makeDraft());

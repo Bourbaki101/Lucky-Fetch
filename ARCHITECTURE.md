@@ -45,15 +45,18 @@ Reload Now resets a running monitor's deadline. It preserves Paused/Stopped stat
 
 ```text
 {
-  version: 4,
+  version: 5,
   monitors: {
     "<tabId>": TabMonitor
   },
-  notificationHistory: NotificationHistoryEntry[]
+  notificationHistory: NotificationHistoryEntry[],
+  quickTriggers: string[]
 }
 ```
 
-A monitor stores tab metadata, reload configuration/count/status, interaction timestamps, typing-protection deadline, an error message, a generated tab-instance token, separate keyword configuration/runtime, and a newest-first capped detection history. Version 1 records migrate locally with keyword monitoring disabled and an unknown baseline. Version 2 single-keyword records migrate to an ordered rule list with a deterministic stable legacy ID and `highlightMatches: false`. Version 4 adds the global notification history. The normalizer accepts versions 1–4 and always emits version 4, making migration idempotent. Valid legacy runtime baselines and detection histories are preserved.
+A monitor stores tab metadata, reload configuration/count/status, interaction timestamps, typing-protection deadline, an error message, a generated tab-instance token, separate keyword configuration/runtime, and a newest-first capped detection history. Version 1 records migrate locally with keyword monitoring disabled and an unknown baseline. Version 2 single-keyword records migrate to an ordered rule list with a deterministic stable legacy ID and `highlightMatches: false`. Version 4 adds the global notification history. Version 5 adds the deliberately saved, five-item Quick Trigger list. The normalizer accepts versions 1–5 and always emits version 5, making migration idempotent. Valid legacy runtime baselines and detection histories are preserved, reload intervals are clamped to the supported 10-second–30-day range, and enabled monitor delays are capped at half the reload interval.
+
+Activity is a selector over these same per-tab monitor records. It derives Reload/Monitor flags, attention state, keywords, and remaining time from the existing status, detection runtime, and absolute `nextReloadAt`; it does not persist a parallel activity model. Snapshot requests query current browser tabs and use the normal reset path to remove stale records.
 
 Each configured keyword has a stable ID and trimmed value. Matching and highlighting use the same case-sensitivity setting. Tab state is Present when any configured keyword matches in any successfully scanned frame. Frame matches are aggregated before the single Found/Lost transition is evaluated. Successfully created browser alerts also append compact Found/Lost metadata to a global newest-first notification history capped at 15 entries.
 
@@ -128,7 +131,7 @@ Structured diagnostic details include initialization status, durable/in-memory m
 ## Manifest V3 tradeoffs
 
 - Service workers are suspendable; no correctness depends on in-memory timers.
-- Chromium alarms have a 30-second minimum in supported browser versions and may be delayed.
+- Chromium repeating alarms have a 30-second minimum in supported browser versions and alarms may be delayed. Reloads remain one-shot absolute-deadline alarms; the one-second timer is visual-only and never becomes a competing scheduler.
 - Optional per-site access is required to restore interaction detection after reloads. It cannot be requested silently after cross-origin navigation, so those monitors enter Error.
 - Protected browser pages and extension stores reject script injection.
 - `tabs.reload()` confirms that the browser accepted the API request, not that the final page rendered successfully.

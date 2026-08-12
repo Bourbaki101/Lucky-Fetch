@@ -2,6 +2,7 @@ import {
   ACTIVE_TYPING_IDLE_MS,
   DEFAULT_KEYWORD_MONITORING
 } from "./constants";
+import { normalizeIntervalMs } from "./time";
 import type {
   InteractionEvent,
   KeywordMonitoringConfig,
@@ -19,8 +20,10 @@ export function createRunningMonitor(
     ...DEFAULT_KEYWORD_MONITORING
   }
 ): TabMonitor {
+  const intervalMs = normalizeIntervalMs(settings.intervalMs);
   return {
     ...settings,
+    intervalMs,
     tabId: tab.id,
     tabInstanceId,
     pageTitle: tab.title,
@@ -28,7 +31,7 @@ export function createRunningMonitor(
     reloadCount: 0,
     status: "running",
     lastReloadAt: null,
-    nextReloadAt: now + settings.intervalMs,
+    nextReloadAt: now + intervalMs,
     lastUserInteractionAt: null,
     typingProtectionUntil: null,
     errorMessage: null,
@@ -72,10 +75,12 @@ export function pauseMonitor(monitor: TabMonitor, now: number): TabMonitor {
 }
 
 export function resumeMonitor(monitor: TabMonitor, now: number): TabMonitor {
+  const intervalMs = normalizeIntervalMs(monitor.intervalMs);
   return {
     ...monitor,
+    intervalMs,
     status: "running",
-    nextReloadAt: now + monitor.intervalMs,
+    nextReloadAt: now + intervalMs,
     typingProtectionUntil: null,
     errorMessage: null,
     updatedAt: now
@@ -112,6 +117,7 @@ export function recordAcceptedReload(
   monitor: TabMonitor,
   now: number
 ): TabMonitor {
+  const intervalMs = normalizeIntervalMs(monitor.intervalMs);
   const reloadCount = monitor.reloadCount + 1;
   const completed =
     monitor.maximumReloads !== null &&
@@ -119,10 +125,11 @@ export function recordAcceptedReload(
 
   return {
     ...monitor,
+    intervalMs,
     reloadCount,
     status: completed ? "completed" : "running",
     lastReloadAt: now,
-    nextReloadAt: completed ? null : now + monitor.intervalMs,
+    nextReloadAt: completed ? null : now + intervalMs,
     typingProtectionUntil: null,
     errorMessage: null,
     updatedAt: now
@@ -164,10 +171,14 @@ export function applyInteraction(
 
   switch (monitor.interactionBehavior) {
     case "delay":
+      {
+        const intervalMs = normalizeIntervalMs(monitor.intervalMs);
       return {
         ...base,
-        nextReloadAt: event.occurredAt + monitor.intervalMs
+        intervalMs,
+        nextReloadAt: event.occurredAt + intervalMs
       };
+      }
     case "pause":
       return {
         ...base,

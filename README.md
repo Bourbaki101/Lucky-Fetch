@@ -5,7 +5,7 @@ LuckyFetch is a local-first Chromium extension that automatically reloads select
 ## Phase 1
 
 - Independent configuration and state for every monitored tab
-- Custom intervals from 30 seconds to 30 days, as if, lol. Plus 30-second, 1-minute, 5-minute, and 15-minute presets
+- Custom intervals from 10 seconds to 30 days, plus 10-second, 30-second, 1-minute, 5-minute, and 15-minute presets
 - Start, Pause, Resume, Stop, and Reload Now controls
 - Optional reload limit with a visible Completed state
 - Optional cache bypass
@@ -17,6 +17,9 @@ LuckyFetch is a local-first Chromium extension that automatically reloads select
 - Safe cleanup when monitored tabs close or become stale
 - Recoverable popup initialization with bounded browser API waits
 - Per-tab reset and local diagnostic details when the worker is unavailable
+- Activity overview with live per-tab reload countdowns, monitor state, Needs Attention grouping, Open, and Stop All
+- Up to five deliberately saved Quick Triggers for reused Monitor keywords
+- Monitor delay capped at 50% of the reload interval when Reload and Monitor run together
 
 The Phase 1 boundary and later ideas are in [PRODUCT.md](PRODUCT.md).
 
@@ -147,7 +150,7 @@ For development cleanup, open **Show diagnostics** and choose **Reset all monito
 
 ## Known limitations
 
-- The minimum interval is 30 seconds. Fast mode is intentionally not included in Phase 1.
+- The minimum reload interval is 10 seconds. One-shot alarms and persisted absolute deadlines preserve recovery and per-tab countdown behavior.
 - Chromium alarms are best-effort. Sleeping devices, browser suspension, heavy load, or background throttling can deliver an alarm late.
 - While monitoring is active, the badge counts down every second from persisted absolute deadlines and shows whichever running tab will refresh next. It restores from the timestamp whenever the Manifest V3 worker wakes.
 - Chromium does not provide a definitive “page rendered successfully” result for `tabs.reload()`. LuckyFetch reports API rejection as Error and refreshes metadata when tab loading completes.

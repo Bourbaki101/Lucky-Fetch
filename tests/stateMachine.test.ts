@@ -27,6 +27,12 @@ const create = (overrides: Partial<MonitorSettings> = {}) =>
   );
 
 describe("monitor state transitions", () => {
+  it("never schedules a runtime interval below 10 seconds", () => {
+    const started = create({ intervalMs: 1_000 });
+    expect(started.intervalMs).toBe(10_000);
+    expect(started.nextReloadAt).toBe(110_000);
+  });
+
   it("starts, pauses, resumes, and stops with absolute timestamps", () => {
     const started = create();
     expect(started.nextReloadAt).toBe(130_000);

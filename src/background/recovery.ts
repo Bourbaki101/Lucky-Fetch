@@ -1,4 +1,5 @@
 import type { TabMonitor } from "../types/monitor";
+import { MIN_INTERVAL_MS } from "../shared/constants";
 
 export interface RecoveryTab {
   id: number;
@@ -23,7 +24,7 @@ export function isPlausibleMonitor(value: unknown): value is TabMonitor {
     typeof monitor.pageUrl === "string" &&
     typeof monitor.pageTitle === "string" &&
     Number.isFinite(monitor.intervalMs) &&
-    (monitor.intervalMs ?? 0) >= 30_000 &&
+    (monitor.intervalMs ?? 0) >= MIN_INTERVAL_MS &&
     (monitor.nextReloadAt === null ||
       (typeof monitor.nextReloadAt === "number" &&
         Number.isFinite(monitor.nextReloadAt))) &&

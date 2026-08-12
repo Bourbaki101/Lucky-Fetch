@@ -15,7 +15,7 @@ LuckyFetch makes periodic page reloads dependable, understandable, and independe
 ## Phase 1 features
 
 - Per-tab monitors with persisted settings, timestamps, status, and count
-- A reliable minimum interval of 30 seconds using Manifest V3 alarms
+- A reliable minimum interval of 10 seconds using verified one-shot Manifest V3 alarms and absolute deadlines
 - Start, Pause, Resume, Stop, and Reload Now
 - Unlimited or bounded reload count
 - Optional cache bypass
@@ -44,13 +44,19 @@ LuckyFetch makes periodic page reloads dependable, understandable, and independe
 - Non-mutating multi-keyword test and baseline-safe highlight clearing
 - Idempotent migration from Phase 2A single-keyword records
 
-## Explicit non-goals for Phase 2A
+## Current cross-tab features
 
-- Sub-30-second Fast mode
+- A compact Activity view over existing per-tab reload and monitor state
+- Needs Attention grouping derived from existing Found/Lost detection history
+- Open/focus and unified Stop actions for active Lucky Fetch tabs
+- Up to five deliberate, local Quick Triggers for frequently reused keywords
+- Monitor delay validation capped at half the reload interval
+
+## Explicit non-goals
+
 - Cloud sync, accounts, or a backend
 - Analytics, telemetry, advertising, or remote code
 - Scheduled time-of-day/calendar rules
-- A dashboard for every monitored tab
 - Firefox or Safari support
 - Match All and AND/OR expression rules
 - Exact, whole-word, or regular-expression matching
@@ -61,9 +67,8 @@ LuckyFetch makes periodic page reloads dependable, understandable, and independe
 
 ## Later-phase ideas (documentation only)
 
-- A dedicated monitor dashboard with search and bulk pause/stop
-- Per-monitor labels and reusable local presets
-- Optional sub-30-second Fast mode with prominent throttling warnings
+- Activity search and bulk pause/stop
+- Complex reusable profiles or presets
 - Export/import of local configuration
 - More navigation policies, such as stop on cross-origin navigation
 - Accessible sound cues, disabled by default

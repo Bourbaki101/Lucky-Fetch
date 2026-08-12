@@ -52,6 +52,7 @@ import {
   tabIdFromAlarm
 } from "../scheduling/alarms";
 import { errorMessage, withTimeout } from "../shared/async";
+import { getActiveLuckyFetchTabs } from "../shared/activity";
 import {
   badgeForReloadDeadline,
   type BadgePresentation
@@ -74,6 +75,11 @@ import {
   RECOVERY_RELOAD_DELAY_MS,
   SESSION_TOKEN_PREFIX
 } from "../shared/constants";
+import {
+  addQuickTrigger,
+  removeQuickTrigger
+} from "../shared/quickTriggers";
+import { validateMonitorDelayForReload } from "../shared/time";
 import {
   clearResolvedMatchTokens,
   resolveMatchedElement as resolveFrameMatchedElements,
@@ -104,6 +110,7 @@ import type {
 } from "../types/diagnostics";
 import type {
   DetectionHistoryEntry,
+  ActivityEntry,
   FrameHighlightResult,
   KeywordMatch,
   KeywordMonitorMode,
@@ -125,9 +132,10 @@ import { isPlausibleMonitor, planRecovery } from "./recovery";
 type InitializationStatus = "starting" | "ready" | "error";
 
 let state: PersistedState = {
-  version: 4,
+  version: 5,
   monitors: {},
-  notificationHistory: []
+  notificationHistory: [],
+  quickTriggers: []
 };
 let operationQueue: Promise<unknown> = Promise.resolve();
 let initializationStatus: InitializationStatus = "starting";
@@ -165,12 +173,12 @@ function toTabSummary(tab: chrome.tabs.Tab): TabSummary | null {
 }
 
 function validateSettings(settings: MonitorSettings): string | null {
-  if (
-    !Number.isFinite(settings.intervalMs) ||
-    settings.intervalMs < MIN_INTERVAL_MS ||
-    settings.intervalMs > MAX_INTERVAL_MS
-  ) {
-    return "The interval must be between 30 seconds and 30 days.";
+  if (!Number.isFinite(settings.intervalMs)) return "Enter a valid reload interval.";
+  if (settings.intervalMs < MIN_INTERVAL_MS) {
+    return "Minimum reload interval is 10 seconds.";
+  }
+  if (settings.intervalMs > MAX_INTERVAL_MS) {
+    return "Choose a reload interval of 30 days or less.";
   }
   if (
     settings.maximumReloads !== null &&
@@ -1680,9 +1688,10 @@ async function resetAllMonitors(): Promise<void> {
   const tabIds = [...new Set([...monitorTabIds, ...alarmTabIds])];
 
   state = {
-    version: 4,
+    version: 5,
     monitors: {},
-    notificationHistory: latest.notificationHistory
+    notificationHistory: latest.notificationHistory,
+    quickTriggers: latest.quickTriggers
   };
   await api("Persist full monitor reset", writeState(state));
 
@@ -1739,7 +1748,12 @@ async function buildDiagnostics(
   const storedState =
     stateResult.status === "fulfilled"
       ? stateResult.value
-      : { version: 4 as const, monitors: {}, notificationHistory: [] };
+      : {
+          version: 5 as const,
+          monitors: {},
+          notificationHistory: [],
+          quickTriggers: []
+        };
   const alarms =
     alarmsResult.status === "fulfilled" ? alarmsResult.value : [];
   const storedMonitor =
@@ -1963,9 +1977,10 @@ async function recoverState(): Promise<void> {
   }
 
   state = {
-    version: 4,
+    version: 5,
     monitors: recovered,
-    notificationHistory: saved.notificationHistory
+    notificationHistory: saved.notificationHistory,
+    quickTriggers: saved.quickTriggers
   };
   await persistState();
 
@@ -2005,9 +2020,10 @@ async function recoverState(): Promise<void> {
   }
 
   state = {
-    version: 4,
+    version: 5,
     monitors: recovered,
-    notificationHistory: saved.notificationHistory
+    notificationHistory: saved.notificationHistory,
+    quickTriggers: saved.quickTriggers
   };
   await persistState();
 
@@ -2147,6 +2163,12 @@ async function startMonitor(
   };
   const keywordError = validateKeywordConfig(normalizedKeywordMonitoring);
   if (keywordError) throw new Error(keywordError);
+  const monitorDelayError = validateMonitorDelayForReload(
+    settings.intervalMs,
+    normalizedKeywordMonitoring.scanDelayMs,
+    normalizedKeywordMonitoring.enabled
+  );
+  if (monitorDelayError) throw new Error(monitorDelayError);
 
   const tab = await getTab(tabId);
   const summary = toTabSummary(tab);
@@ -3450,9 +3472,133 @@ async function getCurrentMonitor(
   return { tab: summary, monitor };
 }
 
+async function stopTabActivity(tabId: number): Promise<TabMonitor | null> {
+  const latest = await api("Read state before stopping tab activity", readState());
+  state = latest;
+  const current = getMonitor(state, tabId);
+  if (!current) return null;
+  const monitor = await persistMonitor({
+    ...stopMonitor(current, Date.now()),
+    keywordRuntime: {
+      ...current.keywordRuntime,
+      pendingScan: null,
+      lastScanStatus: current.keywordRuntime.pendingScan
+        ? "idle"
+        : current.keywordRuntime.lastScanStatus
+    }
+  });
+  await bestEffortClearScans(tabId);
+  bestEffortClearHighlights(tabId);
+  return monitor;
+}
+
+async function getActivitySnapshot(): Promise<ActivityEntry[]> {
+  const [latest, tabs] = await Promise.all([
+    api("Read state for Activity", readState()),
+    api("Query tabs for Activity", chrome.tabs.query({}))
+  ]);
+  state = latest;
+  const openTabs = new Map(
+    tabs
+      .filter(
+        (tab): tab is chrome.tabs.Tab & { id: number } =>
+          tab.id !== undefined
+      )
+      .map((tab) => [tab.id, tab])
+  );
+  const staleTabIds = Object.values(latest.monitors)
+    .map((monitor) => monitor.tabId)
+    .filter((tabId) => !openTabs.has(tabId));
+  for (const tabId of staleTabIds) {
+    try {
+      await resetMonitor(tabId);
+    } catch (error) {
+      console.warn("[activity:cleanup] Stale tab cleanup was incomplete.", {
+        tabId,
+        error
+      });
+    }
+  }
+  state = await api("Refresh state after Activity cleanup", readState());
+  const monitors = Object.values(state.monitors).map((monitor) => {
+    const tab = openTabs.get(monitor.tabId);
+    return tab
+      ? {
+          ...monitor,
+          pageTitle: tab.title ?? monitor.pageTitle,
+          pageUrl: tab.url ?? monitor.pageUrl
+        }
+      : monitor;
+  });
+  return getActiveLuckyFetchTabs(monitors);
+}
+
 async function handlePopupRequest(
   request: PopupRequest
 ): Promise<ExtensionResponse> {
+  if (request.type === "activity:get") {
+    return {
+      ok: true,
+      tab: null,
+      monitor: null,
+      activity: await getActivitySnapshot(),
+      quickTriggers: state.quickTriggers
+    };
+  }
+  if (request.type === "activity:open") {
+    const tab = await getTabIfPresent(request.tabId);
+    if (!tab) {
+      try {
+        await resetMonitor(request.tabId);
+      } catch {
+        // The durable record is removed before best-effort browser cleanup.
+      }
+      return {
+        ok: true,
+        tab: null,
+        monitor: null,
+        activity: await getActivitySnapshot(),
+        message: "That tab is no longer open; its stale activity was removed."
+      };
+    }
+    await bringMonitoredTabToFront(request.tabId);
+    return {
+      ok: true,
+      tab: toTabSummary(tab),
+      monitor: getMonitor(state, request.tabId) ?? null,
+      activity: await getActivitySnapshot()
+    };
+  }
+  if (request.type === "activity:stop") {
+    await stopTabActivity(request.tabId);
+    const tab = await getTabIfPresent(request.tabId);
+    return {
+      ok: true,
+      tab: tab ? toTabSummary(tab) : null,
+      monitor: getMonitor(state, request.tabId) ?? null,
+      activity: await getActivitySnapshot(),
+      message: "Lucky Fetch activity stopped for this tab."
+    };
+  }
+  if (
+    request.type === "quick-trigger:save" ||
+    request.type === "quick-trigger:remove"
+  ) {
+    const latest = await api("Read state before Quick Trigger update", readState());
+    latest.quickTriggers =
+      request.type === "quick-trigger:save"
+        ? addQuickTrigger(latest.quickTriggers, request.value)
+        : removeQuickTrigger(latest.quickTriggers, request.value);
+    state = latest;
+    await persistState();
+    const tab = await getTabIfPresent(request.tabId);
+    return {
+      ok: true,
+      tab: tab ? toTabSummary(tab) : null,
+      monitor: getMonitor(state, request.tabId) ?? null,
+      quickTriggers: state.quickTriggers
+    };
+  }
   if (request.type === "notifications:clear") {
     const latest = await api(
       "Read state before clearing notification history",
@@ -3526,7 +3672,8 @@ async function handlePopupRequest(
         ok: true,
         tab: current.tab,
         monitor: current.monitor,
-        notificationHistory: state.notificationHistory
+        notificationHistory: state.notificationHistory,
+        quickTriggers: state.quickTriggers
       };
     }
     case "monitor:start": {
@@ -3563,6 +3710,12 @@ async function handlePopupRequest(
       if (!(await permissionGranted(current.pageUrl))) {
         throw new Error("Site access is no longer available for this page.");
       }
+      const monitorDelayError = validateMonitorDelayForReload(
+        current.intervalMs,
+        current.keywordMonitoring.scanDelayMs,
+        current.keywordMonitoring.enabled
+      );
+      if (monitorDelayError) throw new Error(monitorDelayError);
       let monitor = await persistMonitor({
         ...resumeMonitor(current, Date.now()),
         keywordRuntime: {
@@ -3579,20 +3732,8 @@ async function handlePopupRequest(
       return { ok: true, tab: summary, monitor };
     }
     case "monitor:stop": {
-      const current = getMonitor(state, request.tabId);
-      if (!current) throw new Error("This tab has no saved monitor.");
-      const monitor = await persistMonitor({
-        ...stopMonitor(current, Date.now()),
-        keywordRuntime: {
-          ...current.keywordRuntime,
-          pendingScan: null,
-          lastScanStatus: current.keywordRuntime.pendingScan
-            ? "idle"
-            : current.keywordRuntime.lastScanStatus
-        }
-      });
-      await bestEffortClearScans(request.tabId);
-      bestEffortClearHighlights(request.tabId);
+      const monitor = await stopTabActivity(request.tabId);
+      if (!monitor) throw new Error("This tab has no saved monitor.");
       return { ok: true, tab: summary, monitor };
     }
     case "monitor:reload-now": {
@@ -3739,6 +3880,12 @@ async function handlePopupRequest(
       };
       const configError = validateKeywordConfig(normalizedConfig);
       if (configError) throw new Error(configError);
+      const monitorDelayError = validateMonitorDelayForReload(
+        current.intervalMs,
+        normalizedConfig.scanDelayMs,
+        normalizedConfig.enabled
+      );
+      if (monitorDelayError) throw new Error(monitorDelayError);
       const baselineChanged =
         !keywordConditionEquals(
           current.keywordMonitoring,
@@ -3894,7 +4041,8 @@ chrome.runtime.onMessage.addListener(
         "monitor:retry-scan",
         "monitor:update-keyword",
         "monitor:reset-baseline",
-        "monitor:reset"
+        "monitor:reset",
+        "activity:stop"
       ].includes(request.type)
     ) {
       invalidateTabScans(request.tabId, request.type);

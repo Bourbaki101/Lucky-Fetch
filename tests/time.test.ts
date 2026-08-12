@@ -10,9 +10,11 @@ import {
 } from "../src/monitoring/runtime";
 import {
   formatCountdown,
+  getMaxMonitorDelay,
   intervalToMs,
   remainingMs,
-  validateInterval
+  validateInterval,
+  validateMonitorDelayForReload
 } from "../src/shared/time";
 import type { TabMonitor } from "../src/types/monitor";
 
@@ -48,12 +50,25 @@ describe("time helpers", () => {
     expect(intervalToMs(1.5, "hours")).toBe(5_400_000);
   });
 
-  it("rejects invalid, short, and unreasonable intervals", () => {
+  it("accepts 10 seconds and rejects values below the minimum", () => {
     expect(validateInterval("", "seconds").valid).toBe(false);
     expect(validateInterval("-1", "minutes").valid).toBe(false);
-    expect(validateInterval("29", "seconds").valid).toBe(false);
+    expect(validateInterval("9.999", "seconds")).toMatchObject({
+      valid: false,
+      error: "Minimum reload interval is 10 seconds."
+    });
     expect(validateInterval("744", "hours").valid).toBe(false);
-    expect(validateInterval("30", "seconds").intervalMs).toBe(30_000);
+    expect(validateInterval("10", "seconds").intervalMs).toBe(10_000);
+  });
+
+  it("caps monitor delay at exactly half of the reload interval", () => {
+    expect(getMaxMonitorDelay(10_000)).toBe(5_000);
+    expect(getMaxMonitorDelay(60_000)).toBe(30_000);
+    expect(validateMonitorDelayForReload(10_000, 5_000, true)).toBeNull();
+    expect(validateMonitorDelayForReload(10_000, 5_001, true)).toBe(
+      "Monitor delay must be 5 seconds or less with a 10-second reload interval."
+    );
+    expect(validateMonitorDelayForReload(10_000, 60_000, false)).toBeNull();
   });
 
   it("calculates remaining time from the absolute timestamp", () => {

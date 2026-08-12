@@ -15,6 +15,8 @@ import {
   DEFAULT_KEYWORD_MONITORING,
   DEFAULT_SETTINGS,
   MAX_KEYWORDS_PER_MONITOR,
+  MAX_QUICK_TRIGGERS,
+  MIN_INTERVAL_MS,
   MONITOR_DRAFTS_STORAGE_KEY,
   POPUP_PREFERENCES_STORAGE_KEY,
   POPUP_HISTORY_LIMIT,
@@ -33,7 +35,13 @@ import {
   readSitePermissionStatus
 } from "../shared/permissions";
 import type { SiteAccessState } from "../shared/permissions";
-import { formatCountdown, remainingMs, validateInterval } from "../shared/time";
+import {
+  formatCountdown,
+  remainingMs,
+  validateInterval,
+  validateMonitorDelayForReload
+} from "../shared/time";
+import { getActiveLuckyFetchTabs, getRemainingReloadMs } from "../shared/activity";
 import { inspectUrl } from "../shared/url";
 import {
   clearReload,
@@ -54,6 +62,7 @@ import {
 } from "../storage/drafts";
 import type {
   AutoOpenResultMode,
+  ActivityEntry,
   BringToFrontMode,
   DetectionAction,
   InteractionBehavior,
@@ -71,15 +80,15 @@ import type {
 } from "../types/monitor";
 
 const PRESETS = [
+  { label: "10 sec", value: 10, unit: "seconds" as const },
   { label: "30 sec", value: 30, unit: "seconds" as const },
   { label: "1 min", value: 1, unit: "minutes" as const },
-  { label: "5 min", value: 5, unit: "minutes" as const },
-  { label: "15 min", value: 15, unit: "minutes" as const }
+  { label: "5 min", value: 5, unit: "minutes" as const }
 ];
 
 type PopupPhase = "loading" | "ready" | "unsupported" | "error";
 type ThemePreference = "system" | "light" | "dark";
-type PopupTab = "interval" | "monitor" | "notifications";
+type PopupTab = "interval" | "monitor" | "activity" | "notifications";
 
 interface AppShellProps {
   children: ReactNode;
@@ -108,6 +117,20 @@ export function AppShell({
 
 function createKeywordRule(value = ""): KeywordRule {
   return { id: globalThis.crypto.randomUUID(), value };
+}
+
+export function recordLogoClick(
+  recentClicks: readonly number[],
+  clickedAt: number,
+  windowMs = 1_500
+): { recentClicks: number[]; triggered: boolean } {
+  const next = [
+    ...recentClicks.filter((timestamp) => clickedAt - timestamp <= windowMs),
+    clickedAt
+  ];
+  return next.length >= 3
+    ? { recentClicks: [], triggered: true }
+    : { recentClicks: next, triggered: false };
 }
 
 function pageHost(url: string): string {
@@ -346,6 +369,8 @@ export function App() {
   const [notificationHistory, setNotificationHistory] = useState<
     NotificationHistoryEntry[]
   >([]);
+  const [quickTriggers, setQuickTriggers] = useState<string[]>([]);
+  const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [intervalValue, setIntervalValue] = useState("1");
   const [intervalUnit, setIntervalUnit] =
     useState<IntervalUnit>("minutes");
@@ -406,6 +431,7 @@ export function App() {
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false);
   const [monitorActivityOpen, setMonitorActivityOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [easterEggOpen, setEasterEggOpen] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>("system");
   const [now, setNow] = useState(Date.now());
@@ -418,11 +444,19 @@ export function App() {
   const initializedTabId = useRef<number | null>(null);
   const initializationGeneration = useRef(0);
   const autoStartingDraft = useRef<string | null>(null);
+  const recentLogoClicks = useRef<number[]>([]);
 
   const intervalValidation = useMemo(
     () => validateInterval(intervalValue, intervalUnit),
     [intervalValue, intervalUnit]
   );
+  const minimumIntervalValue =
+    MIN_INTERVAL_MS /
+    (intervalUnit === "seconds"
+      ? 1_000
+      : intervalUnit === "minutes"
+        ? 60_000
+        : 3_600_000);
   const maximumValidation = useMemo(() => {
     if (!limitEnabled) return null;
     const value = Number(maximumReloads);
@@ -462,8 +496,17 @@ export function App() {
     if (!Number.isFinite(delay) || delay < 0 || delay > 60) {
       return "Enter a scan delay from 0 to 60 seconds.";
     }
-    return validateKeywordConfig(keywordConfiguration);
-  }, [keywordConfiguration, scanDelaySeconds]);
+    const configError = validateKeywordConfig(keywordConfiguration);
+    if (configError) return configError;
+    if (!intervalValidation.valid || intervalValidation.intervalMs === null) {
+      return null;
+    }
+    return validateMonitorDelayForReload(
+      intervalValidation.intervalMs,
+      keywordConfiguration.scanDelayMs,
+      keywordConfiguration.enabled
+    );
+  }, [intervalValidation, keywordConfiguration, scanDelaySeconds]);
   const keywordConfigurationDirty =
     monitor !== null &&
     (monitor.keywordMonitoring.enabled !== keywordConfiguration.enabled ||
@@ -552,6 +595,8 @@ export function App() {
     if (response.notificationHistory) {
       setNotificationHistory(response.notificationHistory);
     }
+    if (response.quickTriggers) setQuickTriggers(response.quickTriggers);
+    if (response.activity) setActivityEntries(response.activity);
     if (response.monitor) hydrateConfiguration(response.monitor);
   }, [hydrateConfiguration]);
 
@@ -611,6 +656,10 @@ export function App() {
           durableState.monitors[monitorKey(summary.id)] ?? null;
         setMonitor(durableMonitor);
         setNotificationHistory(durableState.notificationHistory);
+        setQuickTriggers(durableState.quickTriggers);
+        setActivityEntries(
+          getActiveLuckyFetchTabs(Object.values(durableState.monitors))
+        );
         if (savedDraft?.pageOrigin === supportResult.permissionPattern) {
           restoredDraft = savedDraft;
         }
@@ -733,6 +782,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!easterEggOpen) return;
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setEasterEggOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [easterEggOpen]);
+
+  useEffect(() => {
     let disposed = false;
     void chrome.storage.local
       .get(POPUP_PREFERENCES_STORAGE_KEY)
@@ -765,9 +823,11 @@ export function App() {
       areaName: string
     ): void => {
       if (areaName !== "local" || !changes[STORAGE_KEY]) return;
-      setNotificationHistory(
-        normalizePersistedState(changes[STORAGE_KEY].newValue)
-          .notificationHistory
+      const latest = normalizePersistedState(changes[STORAGE_KEY].newValue);
+      setNotificationHistory(latest.notificationHistory);
+      setQuickTriggers(latest.quickTriggers);
+      setActivityEntries(
+        getActiveLuckyFetchTabs(Object.values(latest.monitors))
       );
     };
     chrome.storage.onChanged.addListener(handleStorageChange);
@@ -805,6 +865,33 @@ export function App() {
       window.clearInterval(refreshId);
     };
   }, [applyResponse, phase, tab]);
+
+  useEffect(() => {
+    if (phase !== "ready" || activeTab !== "activity") return;
+    let disposed = false;
+    let inFlight = false;
+    const refreshActivity = async (): Promise<void> => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        const response = await send({ type: "activity:get", tabId: tab?.id ?? null });
+        if (!disposed && response.ok) {
+          setActivityEntries(response.activity ?? []);
+          if (response.quickTriggers) setQuickTriggers(response.quickTriggers);
+        }
+      } catch (activityError) {
+        if (!disposed) setError(`Activity could not refresh: ${errorMessage(activityError)}`);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refreshActivity();
+    const refreshId = window.setInterval(() => void refreshActivity(), 2_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(refreshId);
+    };
+  }, [activeTab, phase, tab?.id]);
 
   const runAction = async (request: ExtensionRequest): Promise<void> => {
     if (!tab) return;
@@ -1001,6 +1088,83 @@ export function App() {
     setKeywords((current) => [...current, createKeywordRule(value)]);
     setKeywordDraft("");
     setKeywordTestResult(null);
+  };
+
+  const addKeywordValue = (value: string): void => {
+    const normalized = value.trim();
+    if (!normalized) return;
+    if (keywords.length >= MAX_KEYWORDS_PER_MONITOR) {
+      setError(`A monitor can contain up to ${MAX_KEYWORDS_PER_MONITOR} keywords.`);
+      return;
+    }
+    setKeywords((current) => [...current, createKeywordRule(normalized)]);
+    setKeywordTestResult(null);
+  };
+
+  const saveQuickTrigger = async (value: string): Promise<void> => {
+    if (!tab) return;
+    const trigger = value.trim();
+    if (!trigger) return;
+    const duplicate = quickTriggers.some(
+      (item) => item.toLocaleLowerCase() === trigger.toLocaleLowerCase()
+    );
+    if (!duplicate && quickTriggers.length >= MAX_QUICK_TRIGGERS) {
+      setError(`You can save up to ${MAX_QUICK_TRIGGERS} Quick Triggers.`);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await send({
+        type: "quick-trigger:save",
+        tabId: tab.id,
+        value: trigger
+      });
+      if (!response.ok) throw new Error(response.error);
+      setQuickTriggers(response.quickTriggers ?? []);
+    } catch (triggerError) {
+      setError(errorMessage(triggerError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeSavedQuickTrigger = async (value: string): Promise<void> => {
+    if (!tab) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await send({
+        type: "quick-trigger:remove",
+        tabId: tab.id,
+        value
+      });
+      if (!response.ok) throw new Error(response.error);
+      setQuickTriggers(response.quickTriggers ?? []);
+    } catch (triggerError) {
+      setError(errorMessage(triggerError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runActivityAction = async (
+    request: Extract<ExtensionRequest, { type: "activity:open" | "activity:stop" }>
+  ): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await send(request);
+      if (!response.ok) throw new Error(response.error);
+      setActivityEntries(response.activity ?? []);
+      if (request.type === "activity:stop" && request.tabId === tab?.id) {
+        setMonitor(response.monitor);
+      }
+    } catch (activityError) {
+      setError(errorMessage(activityError));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const updateKeyword = (id: string, value: string): void => {
@@ -1267,12 +1431,12 @@ export function App() {
 
   const adjustInterval = (direction: -1 | 1): void => {
     const current = Number(intervalValue);
-    const minimum = intervalUnit === "seconds" ? 30 : intervalUnit === "minutes" ? 0.5 : 0.01;
-    const step = intervalUnit === "seconds" ? 30 : 1;
+    const step = intervalUnit === "seconds" ? 10 : 1;
     const next = Number.isFinite(current)
-      ? Math.max(minimum, current + direction * step)
-      : minimum;
-    setIntervalValue(String(Number(next.toFixed(2))));
+      ? Math.max(minimumIntervalValue, current + direction * step)
+      : minimumIntervalValue;
+    const precision = intervalUnit === "seconds" ? 2 : intervalUnit === "minutes" ? 3 : 4;
+    setIntervalValue(String(Number(next.toFixed(precision))));
   };
 
   const statusText = monitor?.errorMessage
@@ -1289,10 +1453,87 @@ export function App() {
       : monitor?.status === "running"
         ? "running"
         : "neutral";
+  const attentionEntries = activityEntries.filter((entry) => entry.needsAttention);
+  const activeEntries = activityEntries.filter((entry) => !entry.needsAttention);
+  const handleLogoClick = (): void => {
+    const result = recordLogoClick(recentLogoClicks.current, Date.now());
+    recentLogoClicks.current = result.recentClicks;
+    if (result.triggered) setEasterEggOpen(true);
+  };
+  const renderActivityEntry = (entry: ActivityEntry): ReactNode => (
+    <article className="activity-card" key={entry.tabId}>
+      <div className="activity-card-main">
+        <strong title={entry.pageTitle}>{entry.pageTitle}</strong>
+        <span title={entry.pageUrl}>{entry.hostname}</span>
+        {entry.attentionLabel && (
+          <p className="activity-attention-label">{entry.attentionLabel}</p>
+        )}
+      </div>
+      <div className="activity-badges" aria-label="Lucky Fetch activity">
+        {entry.reloadActive && (
+          <span title="Reload active">
+            <img src="/icons/icon-32.png" alt="" /> Reload
+          </span>
+        )}
+        {entry.monitorActive && (
+          <span title="Monitor active">
+            <img src="/icons/settings/alert.png" alt="" /> Monitor
+          </span>
+        )}
+      </div>
+      <div className="activity-details">
+        {entry.reloadActive && (
+          <span className="activity-countdown">
+            Reloading in {formatCountdown(getRemainingReloadMs(entry, now))}
+          </span>
+        )}
+        {entry.monitorActive && entry.keywords.length > 0 && (
+          <span title={entry.keywords.join(", ")}>
+            {entry.keywords.join(" · ")}
+          </span>
+        )}
+        {entry.monitorActive && (
+          <span>State: {matchStateLabel(entry.monitorState)}</span>
+        )}
+        {entry.monitorStatus !== "running" && (
+          <span>Status: {entry.monitorStatus}</span>
+        )}
+      </div>
+      <div className="activity-actions">
+        <button
+          type="button"
+          className="secondary-button compact-button"
+          disabled={busy}
+          onClick={() => void runActivityAction({ type: "activity:open", tabId: entry.tabId })}
+        >
+          Open
+        </button>
+        {(entry.reloadActive || entry.monitorActive) && (
+          <button
+            type="button"
+            className="text-button danger-text"
+            disabled={busy}
+            onClick={() => void runActivityAction({ type: "activity:stop", tabId: entry.tabId })}
+          >
+            Stop all
+          </button>
+        )}
+      </div>
+    </article>
+  );
 
   const header = (
+    <>
     <header className="app-header">
-      <img src="/icons/icon-48.png" width="30" height="30" alt="" />
+      <button
+        type="button"
+        className="brand-icon-button"
+        aria-label="Lucky Fetch logo"
+        title="Lucky Fetch"
+        onClick={handleLogoClick}
+      >
+        <img src="/icons/icon-48.png" width="30" height="30" alt="" />
+      </button>
       <div className="brand-copy">
         <h1>Lucky Fetch</h1>
         <p>Reliable reloads, tab by tab</p>
@@ -1314,6 +1555,35 @@ export function App() {
         </div>
       )}
     </header>
+    {easterEggOpen && (
+      <div
+        className="lucky-easter-egg-backdrop"
+        role="presentation"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setEasterEggOpen(false);
+        }}
+      >
+        <section
+          className="lucky-easter-egg"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="lucky-easter-egg-title"
+        >
+          <button
+            type="button"
+            className="lucky-easter-egg-close"
+            aria-label="Close The real Lucky Fetch"
+            autoFocus
+            onClick={() => setEasterEggOpen(false)}
+          >
+            ×
+          </button>
+          <img src="/images/lucky-irl.png" alt="Lucky the dog" />
+          <p id="lucky-easter-egg-title">The real Lucky Fetch</p>
+        </section>
+      </div>
+    )}
+    </>
   );
 
   const tabs = (
@@ -1340,7 +1610,7 @@ export function App() {
           }
         }}
       >
-        Interval
+        Reload
       </button>
       <button
         type="button"
@@ -1357,7 +1627,11 @@ export function App() {
             event.preventDefault();
             setActiveTab("interval");
             document.getElementById("interval-tab")?.focus();
-          } else if (event.key === "ArrowRight" || event.key === "End") {
+          } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            setActiveTab("activity");
+            document.getElementById("activity-tab")?.focus();
+          } else if (event.key === "End") {
             event.preventDefault();
             setActiveTab("notifications");
             document.getElementById("notifications-tab")?.focus();
@@ -1366,6 +1640,37 @@ export function App() {
       >
         Monitor
         {keywordEnabled && <span className="tab-indicator" aria-label="enabled" />}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        id="activity-tab"
+        aria-controls="activity-panel"
+        aria-selected={activeTab === "activity"}
+        tabIndex={activeTab === "activity" ? 0 : -1}
+        className={activeTab === "activity" ? "active" : ""}
+        disabled={phase !== "ready"}
+        onClick={() => setActiveTab("activity")}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            setActiveTab("monitor");
+            document.getElementById("monitor-tab")?.focus();
+          } else if (event.key === "ArrowRight" || event.key === "End") {
+            event.preventDefault();
+            setActiveTab("notifications");
+            document.getElementById("notifications-tab")?.focus();
+          } else if (event.key === "Home") {
+            event.preventDefault();
+            setActiveTab("interval");
+            document.getElementById("interval-tab")?.focus();
+          }
+        }}
+      >
+        Activity
+        {activityEntries.length > 0 && (
+          <span className="tab-indicator" aria-label="has active tabs" />
+        )}
       </button>
       <button
         type="button"
@@ -1380,8 +1685,8 @@ export function App() {
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft") {
             event.preventDefault();
-            setActiveTab("monitor");
-            document.getElementById("monitor-tab")?.focus();
+            setActiveTab("activity");
+            document.getElementById("activity-tab")?.focus();
           } else if (event.key === "Home") {
             event.preventDefault();
             setActiveTab("interval");
@@ -1784,6 +2089,30 @@ export function App() {
             </div>
           </div>
 
+          <div className="settings-group">
+            <span className="field-label">Quick Triggers</span>
+            {quickTriggers.length === 0 ? (
+              <p className="field-help">No saved Monitor keywords.</p>
+            ) : (
+              <div className="quick-trigger-list" aria-label="Saved Quick Triggers">
+                {quickTriggers.map((trigger) => (
+                  <span className="quick-trigger" key={trigger}>
+                    <span className="quick-trigger-setting-label">{trigger}</span>
+                    <button
+                      type="button"
+                      className="quick-trigger-remove"
+                      aria-label={`Remove Quick Trigger ${trigger}`}
+                      disabled={busy}
+                      onClick={() => void removeSavedQuickTrigger(trigger)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="settings-group permission-settings">
             <button
               type="button"
@@ -1995,7 +2324,7 @@ export function App() {
               id="interval-value"
               className="interval-value"
               type="number"
-              min="0"
+              min={minimumIntervalValue}
               step="any"
               inputMode="decimal"
               value={intervalValue}
@@ -2171,7 +2500,7 @@ export function App() {
           <div className="feature-disclosure">
             <span className="accordion-copy">
               <span className="section-kicker">Page monitor</span>
-              <strong id="keyword-monitoring-heading">Keyword monitoring</strong>
+              <strong id="keyword-monitoring-heading">Key Monitoring</strong>
               <small>{keywordSummary(keywordEnabled, keywords, keywordMode)}</small>
             </span>
           </div>
@@ -2199,9 +2528,23 @@ export function App() {
           <span className="locked-pill keyword-lock">Pause to edit</span>
         )}
 
-        {keywordEnabled && (
-        <div className="feature-panel" id="keyword-monitoring-panel">
-        <fieldset disabled={keywordConfigLocked || busy}>
+        <div
+          className="monitor-configuration"
+          id="keyword-monitoring-panel"
+          aria-disabled={!keywordEnabled}
+        >
+        <div className="monitor-configuration-heading">
+          <span className="section-kicker">Monitor configuration</span>
+        </div>
+        {!keywordEnabled && (
+          <p className="monitor-disabled-hint" id="monitor-disabled-hint">
+            Enable Key Monitoring to configure these options.
+          </p>
+        )}
+        <fieldset
+          disabled={!keywordEnabled || keywordConfigLocked || busy}
+          aria-describedby={!keywordEnabled ? "monitor-disabled-hint" : undefined}
+        >
           <span className="field-label">Detection mode</span>
           <div className="mode-segments" role="group" aria-label="Detection mode">
             <button
@@ -2227,6 +2570,33 @@ export function App() {
           <span className="field-label keyword-field-label">
             Keywords or phrases
           </span>
+          {quickTriggers.length > 0 && (
+            <div className="quick-triggers" aria-label="Quick Triggers">
+              <span>Quick Triggers:</span>
+              <div className="quick-trigger-list">
+                {quickTriggers.map((trigger) => (
+                  <span className="quick-trigger" key={trigger}>
+                    <button
+                      type="button"
+                      className="quick-trigger-use"
+                      title={`Add ${trigger} to this monitor`}
+                      onClick={() => addKeywordValue(trigger)}
+                    >
+                      {trigger}
+                    </button>
+                    <button
+                      type="button"
+                      className="quick-trigger-remove"
+                      aria-label={`Remove Quick Trigger ${trigger}`}
+                      onClick={() => void removeSavedQuickTrigger(trigger)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="keyword-compose">
             <label className="sr-only" htmlFor="keyword-draft">Add a keyword or phrase</label>
             <input
@@ -2245,6 +2615,16 @@ export function App() {
                 }
               }}
             />
+            <button
+              type="button"
+              className="quick-trigger-save"
+              aria-label="Save current keyword as a Quick Trigger"
+              title="Save as Quick Trigger"
+              disabled={!keywordDraft.trim()}
+              onClick={() => void saveQuickTrigger(keywordDraft)}
+            >
+              ☆
+            </button>
             <button
               type="button"
               className="primary-button keyword-add-button"
@@ -2522,7 +2902,7 @@ export function App() {
           <button
             type="button"
             className="text-button"
-            disabled={busy || keywordValidation !== null}
+            disabled={!keywordEnabled || busy || keywordValidation !== null}
             onClick={() => void testKeywords()}
           >
             Test keywords on current page
@@ -2530,7 +2910,7 @@ export function App() {
           <button
             type="button"
             className="text-button"
-            disabled={busy}
+            disabled={!keywordEnabled || busy}
             onClick={() => void clearPageHighlights()}
           >
             Clear highlights
@@ -2561,6 +2941,7 @@ export function App() {
         <div className="keyword-notes">
           <p>A confirmed Present result alerts once, including the first scan.</p>
           <p>Alerts occur only when the condition changes, not on every reload.</p>
+        </div>
         </div>
 
         {monitor && (
@@ -2732,7 +3113,61 @@ export function App() {
             )}
           </div>
         )}
+      </section>
+
+      <section
+        id="activity-panel"
+        role="tabpanel"
+        aria-labelledby="activity-tab"
+        hidden={activeTab !== "activity"}
+        className="activity-panel tab-panel"
+      >
+        <div className="activity-heading">
+          <div>
+            <span className="section-kicker">All monitored tabs</span>
+            <h2>Activity</h2>
+          </div>
+          <button
+            type="button"
+            className="text-button"
+            disabled={busy}
+            onClick={() => {
+              void send({ type: "activity:get", tabId: tab.id })
+                .then((response) => {
+                  if (response.ok) setActivityEntries(response.activity ?? []);
+                })
+                .catch((activityError) => setError(errorMessage(activityError)));
+            }}
+          >
+            Refresh
+          </button>
         </div>
+
+        {activityEntries.length === 0 ? (
+          <div className="activity-empty">
+            <img src="/icons/settings/monitor.png" alt="" />
+            <h3>No active Lucky Fetch tabs</h3>
+            <p>Start Reload or Monitor on a tab and it will appear here.</p>
+          </div>
+        ) : (
+          <div className="activity-sections">
+            {attentionEntries.length > 0 && (
+              <section aria-labelledby="needs-attention-heading">
+                <h3 id="needs-attention-heading">Needs attention</h3>
+                <div className="activity-list">
+                  {attentionEntries.map(renderActivityEntry)}
+                </div>
+              </section>
+            )}
+            {activeEntries.length > 0 && (
+              <section aria-labelledby="active-activity-heading">
+                <h3 id="active-activity-heading">Active</h3>
+                <div className="activity-list">
+                  {activeEntries.map(renderActivityEntry)}
+                </div>
+              </section>
+            )}
+          </div>
         )}
       </section>
 

@@ -235,9 +235,25 @@ export interface TabMonitor extends MonitorSettings {
 }
 
 export interface PersistedState {
-  version: 4;
+  version: 5;
   monitors: Record<string, TabMonitor>;
   notificationHistory: NotificationHistoryEntry[];
+  quickTriggers: string[];
+}
+
+export interface ActivityEntry {
+  tabId: number;
+  pageTitle: string;
+  pageUrl: string;
+  hostname: string;
+  reloadActive: boolean;
+  monitorActive: boolean;
+  nextReloadAt: number | null;
+  keywords: string[];
+  monitorStatus: MonitorStatus;
+  monitorState: boolean | null;
+  needsAttention: boolean;
+  attentionLabel: string | null;
 }
 
 export interface TabSummary {

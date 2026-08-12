@@ -137,7 +137,7 @@ function makeMonitor(
     ...createRunningMonitor(
       { id: 1, title: "Monitored", url: "https://example.com/" },
       {
-        intervalMs: 30_000,
+        intervalMs: 10_000,
         bypassCache: false,
         maximumReloads: null,
         interactionBehavior: "ignore",
@@ -244,9 +244,10 @@ function installChromeMock(monitor: TabMonitor | null): MockEnvironment {
     ]
   ]);
   const state: PersistedState = {
-    version: 4,
+    version: 5,
     monitors: monitor ? { "1": monitor } : {},
-    notificationHistory: []
+    notificationHistory: [],
+    quickTriggers: []
   };
   const session: Record<string, unknown> = monitor
     ? { "luckyfetch:tab-instance:1": monitor.tabInstanceId }
@@ -380,6 +381,7 @@ function installChromeMock(monitor: TabMonitor | null): MockEnvironment {
             state.notificationHistory = structuredClone(
               next.notificationHistory
             );
+            state.quickTriggers = structuredClone(next.quickTriggers);
           }
         })
       },
@@ -517,6 +519,143 @@ describe("background runtime recovery", () => {
     const { stopBadgeCountdown } = await import("../src/background/index");
     await stopBadgeCountdown(false);
     vi.restoreAllMocks();
+  });
+
+  it("accepts a 10-second reload and rejects anything shorter", async () => {
+    const environment = installChromeMock(null);
+    await importBackground();
+    const keywordMonitoring = makeMonitor().keywordMonitoring;
+    const accepted = await sendMessage(environment, {
+      type: "monitor:start",
+      tabId: 1,
+      settings: {
+        intervalMs: 10_000,
+        bypassCache: false,
+        maximumReloads: null,
+        interactionBehavior: "ignore",
+        protectActiveTyping: true
+      },
+      keywordMonitoring
+    });
+    expect(accepted.ok && accepted.monitor?.intervalMs).toBe(10_000);
+
+    const rejected = await sendMessage(environment, {
+      type: "monitor:start",
+      tabId: 1,
+      settings: {
+        intervalMs: 9_999,
+        bypassCache: false,
+        maximumReloads: null,
+        interactionBehavior: "ignore",
+        protectActiveTyping: true
+      },
+      keywordMonitoring
+    });
+    expect(rejected).toMatchObject({ ok: false });
+    if (!rejected.ok) expect(rejected.error).toContain("10 seconds");
+  });
+
+  it("enforces the exact monitor-delay boundary in the background", async () => {
+    const environment = installChromeMock(null);
+    await importBackground();
+    const keywordMonitoring = {
+      ...makeKeywordMonitor().keywordMonitoring,
+      scanDelayMs: 5_001
+    };
+    const settings = {
+      intervalMs: 10_000,
+      bypassCache: false,
+      maximumReloads: null,
+      interactionBehavior: "ignore" as const,
+      protectActiveTyping: true
+    };
+    const rejected = await sendMessage(environment, {
+      type: "monitor:start",
+      tabId: 1,
+      settings,
+      keywordMonitoring
+    });
+    expect(rejected).toMatchObject({ ok: false });
+    if (!rejected.ok) expect(rejected.error).toContain("5 seconds or less");
+
+    const accepted = await sendMessage(environment, {
+      type: "monitor:start",
+      tabId: 1,
+      settings,
+      keywordMonitoring: { ...keywordMonitoring, scanDelayMs: 5_000 }
+    });
+    expect(accepted.ok).toBe(true);
+  });
+
+  it("opens and stops Activity entries through the existing tab paths", async () => {
+    const environment = installChromeMock(makeKeywordMonitor());
+    await importBackground();
+    environment.updatedEvent.emit(
+      1,
+      { status: "complete" },
+      environment.tabs.get(1)!
+    );
+    await vi.waitFor(() => expect(scanAlarmNames(environment)).toHaveLength(1));
+    const snapshot = await sendMessage(environment, {
+      type: "activity:get",
+      tabId: 1
+    });
+    expect(snapshot.ok && snapshot.activity).toHaveLength(1);
+
+    await sendMessage(environment, { type: "activity:open", tabId: 1 });
+    expect(environment.updateTab).toHaveBeenCalledWith(1, { active: true });
+    expect(environment.updateWindow).toHaveBeenCalledWith(1, { focused: true });
+
+    const stopped = await sendMessage(environment, {
+      type: "activity:stop",
+      tabId: 1
+    });
+    expect(stopped.ok && stopped.activity).toEqual([]);
+    expect(environment.state.monitors["1"]?.status).toBe("stopped");
+    expect(environment.alarms.has(alarmName(1))).toBe(false);
+    expect(scanAlarmNames(environment)).toHaveLength(0);
+  });
+
+  it("cleans stale closed-tab Activity records", async () => {
+    const environment = installChromeMock(makeMonitor());
+    await importBackground();
+    environment.tabs.delete(1);
+    const snapshot = await sendMessage(environment, {
+      type: "activity:get",
+      tabId: null
+    });
+    expect(snapshot.ok && snapshot.activity).toEqual([]);
+    expect(environment.state.monitors["1"]).toBeUndefined();
+  });
+
+  it("saves, deduplicates, caps, and removes persisted Quick Triggers", async () => {
+    const environment = installChromeMock(null);
+    await importBackground();
+    for (const value of [" Accept ", "accept", "Available", "Resolved", "Ready", "Complete", "Ignored"]) {
+      await sendMessage(environment, {
+        type: "quick-trigger:save",
+        tabId: 1,
+        value
+      });
+    }
+    expect(environment.state.quickTriggers).toEqual([
+      "Accept",
+      "Available",
+      "Resolved",
+      "Ready",
+      "Complete"
+    ]);
+    await sendMessage(environment, {
+      type: "quick-trigger:remove",
+      tabId: 1,
+      value: " available "
+    });
+    expect(environment.state.quickTriggers).toEqual([
+      "Accept",
+      "Resolved",
+      "Ready",
+      "Complete"
+    ]);
   });
 
   it("restores independent per-tab countdowns without a global badge", async () => {

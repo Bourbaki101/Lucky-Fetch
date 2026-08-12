@@ -1,5 +1,6 @@
-export const MIN_INTERVAL_MS = 30_000;
+export const MIN_INTERVAL_MS = 10_000;
 export const MAX_INTERVAL_MS = 30 * 24 * 60 * 60 * 1_000;
+export const MONITOR_DELAY_RELOAD_RATIO = 0.5;
 export const ACTIVE_TYPING_IDLE_MS = 5_000;
 export const STORAGE_KEY = "luckyfetchState";
 export const MONITOR_DRAFTS_STORAGE_KEY = "luckyfetchPendingMonitorDrafts";
@@ -26,6 +27,7 @@ export const POPUP_HISTORY_LIMIT = 5;
 export const NOTIFICATION_HISTORY_LIMIT = 15;
 export const MAX_KEYWORDS_PER_MONITOR = 20;
 export const MAX_KEYWORD_LENGTH = 200;
+export const MAX_QUICK_TRIGGERS = 5;
 export const MAX_MATCHED_KEYWORD_METADATA = 20;
 export const MAX_NOTIFICATION_KEYWORDS = 3;
 export const MAX_HIGHLIGHTS_PER_FRAME = 500;

@@ -1,4 +1,5 @@
 import type {
+  ActivityEntry,
   InteractionEvent,
   FrameHighlightResult,
   KeywordRule,
@@ -72,6 +73,11 @@ export type PopupRequest =
   | { type: "monitor:reset-baseline"; tabId: number }
   | { type: "monitor:reset"; tabId: number }
   | { type: "notifications:clear"; tabId: number }
+  | { type: "activity:get"; tabId: number | null }
+  | { type: "activity:open"; tabId: number }
+  | { type: "activity:stop"; tabId: number }
+  | { type: "quick-trigger:save"; tabId: number; value: string }
+  | { type: "quick-trigger:remove"; tabId: number; value: string }
   | { type: "monitor:diagnostics"; tabId: number | null }
   | { type: "monitor:reconcile"; tabId: number | null }
   | { type: "monitor:reset-all"; tabId: number | null };
@@ -148,6 +154,8 @@ export type ExtensionResponse =
       monitor: TabMonitor | null;
       diagnostics?: DiagnosticSnapshot;
       notificationHistory?: NotificationHistoryEntry[];
+      activity?: ActivityEntry[];
+      quickTriggers?: string[];
       testResult?: KeywordTestResult;
       message?: string;
     }
@@ -180,7 +188,7 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
   const request = value as Partial<PopupRequest>;
   if (typeof request.type !== "string") return false;
   if (
-    ["monitor:diagnostics", "monitor:reconcile", "monitor:reset-all"].includes(
+    ["monitor:diagnostics", "monitor:reconcile", "monitor:reset-all", "activity:get"].includes(
       request.type
     )
   ) {
@@ -196,6 +204,12 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
   if (request.type === "monitor:test-keywords") {
     return Boolean(request.keywordMonitoring);
   }
+  if (
+    request.type === "quick-trigger:save" ||
+    request.type === "quick-trigger:remove"
+  ) {
+    return typeof request.value === "string";
+  }
   return [
     "monitor:get-current",
     "monitor:pause",
@@ -207,7 +221,9 @@ export function isPopupRequest(value: unknown): value is PopupRequest {
     "monitor:clear-history",
     "monitor:reset-baseline",
     "monitor:reset",
-    "notifications:clear"
+    "notifications:clear",
+    "activity:open",
+    "activity:stop"
   ].includes(request.type);
 }
 

@@ -2,6 +2,8 @@ import {
   NOTIFICATION_HISTORY_LIMIT,
   STORAGE_KEY
 } from "../shared/constants";
+import { getMaxMonitorDelay, normalizeIntervalMs } from "../shared/time";
+import { normalizeQuickTriggers } from "../shared/quickTriggers";
 import { validateKeywordConfig } from "../monitoring/matching";
 import {
   createKeywordConfig,
@@ -21,9 +23,10 @@ import type {
 import { HIGHLIGHT_ERROR_CODES, MONITOR_ERROR_CODES } from "../types/monitor";
 
 const EMPTY_STATE: PersistedState = {
-  version: 4,
+  version: 5,
   monitors: {},
-  notificationHistory: []
+  notificationHistory: [],
+  quickTriggers: []
 };
 
 function legacyKeywordId(value: string): string {
@@ -314,6 +317,7 @@ function corruptStateError(): TypedMonitorError {
 function normalizeMonitor(value: unknown): TabMonitor | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<TabMonitor>;
+  const intervalMs = normalizeIntervalMs(candidate.intervalMs);
   const hadKeywordConfig = candidate.keywordMonitoring !== undefined;
   let keywordMonitoring = createKeywordConfig();
   let configWasCorrupt = false;
@@ -382,7 +386,12 @@ function normalizeMonitor(value: unknown): TabMonitor | null {
         keywords: normalizedSupplied.keywords,
         mode: normalizedSupplied.mode,
         caseSensitive: normalizedSupplied.caseSensitive,
-        scanDelayMs: normalizedSupplied.scanDelayMs,
+        scanDelayMs: normalizedSupplied.enabled
+          ? Math.min(
+              normalizedSupplied.scanDelayMs,
+              getMaxMonitorDelay(intervalMs)
+            )
+          : normalizedSupplied.scanDelayMs,
         actionOnDetection: normalizedSupplied.actionOnDetection,
         highlightMatches: normalizedSupplied.highlightMatches,
         notificationMessage: normalizedSupplied.notificationMessage,
@@ -402,6 +411,7 @@ function normalizeMonitor(value: unknown): TabMonitor | null {
 
   return {
     ...(candidate as TabMonitor),
+    intervalMs,
     keywordMonitoring,
     keywordRuntime,
     detectionHistory: Array.isArray(candidate.detectionHistory)
@@ -424,9 +434,10 @@ export function normalizePersistedState(value: unknown): PersistedState {
     version?: unknown;
     monitors?: unknown;
     notificationHistory?: unknown;
+    quickTriggers?: unknown;
   };
   if (
-    ![1, 2, 3, 4].includes(Number(candidate.version)) ||
+    ![1, 2, 3, 4, 5].includes(Number(candidate.version)) ||
     !candidate.monitors ||
     typeof candidate.monitors !== "object" ||
     Array.isArray(candidate.monitors)
@@ -448,7 +459,12 @@ export function normalizePersistedState(value: unknown): PersistedState {
         .sort((left, right) => right.timestamp - left.timestamp)
         .slice(0, NOTIFICATION_HISTORY_LIMIT)
     : [];
-  return { version: 4, monitors, notificationHistory };
+  return {
+    version: 5,
+    monitors,
+    notificationHistory,
+    quickTriggers: normalizeQuickTriggers(candidate.quickTriggers)
+  };
 }
 
 export async function readState(): Promise<PersistedState> {

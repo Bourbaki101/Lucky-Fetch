@@ -28,7 +28,7 @@ describe("keyword state persistence migration", () => {
       version: 1,
       monitors: { "1": phaseOneMonitor() }
     });
-    expect(state.version).toBe(4);
+    expect(state.version).toBe(5);
     expect(state.monitors["1"]?.keywordMonitoring.enabled).toBe(false);
     expect(
       state.monitors["1"]?.keywordMonitoring.notificationMessage
@@ -202,5 +202,56 @@ describe("keyword state persistence migration", () => {
       triggerLabel: "Queue alert"
     });
     expect(state.notificationHistory.at(-1)?.id).toBe("notification-2");
+  });
+
+  it("normalizes persisted reload intervals and combined monitor delay", () => {
+    const current = createRunningMonitor(
+      { id: 1, title: "Page", url: "https://example.com/" },
+      {
+        intervalMs: 5_000,
+        bypassCache: false,
+        maximumReloads: null,
+        interactionBehavior: "ignore",
+        protectActiveTyping: true
+      },
+      1_000,
+      "instance"
+    );
+    current.keywordMonitoring = {
+      ...current.keywordMonitoring,
+      enabled: true,
+      keywords: [{ id: "available", value: "Available" }],
+      scanDelayMs: 10_000
+    };
+    const state = normalizePersistedState({
+      version: 4,
+      monitors: { "1": current }
+    });
+    expect(state.monitors["1"]?.intervalMs).toBe(10_000);
+    expect(state.monitors["1"]?.keywordMonitoring.scanDelayMs).toBe(5_000);
+  });
+
+  it("persists a trimmed, duplicate-free maximum of five Quick Triggers", () => {
+    const first = normalizePersistedState({
+      version: 5,
+      monitors: {},
+      quickTriggers: [
+        " Accept ",
+        "accept",
+        "Available",
+        "Resolved",
+        "Ready",
+        "Complete",
+        "Ignored"
+      ]
+    });
+    const restored = normalizePersistedState(first);
+    expect(restored.quickTriggers).toEqual([
+      "Accept",
+      "Available",
+      "Resolved",
+      "Ready",
+      "Complete"
+    ]);
   });
 });

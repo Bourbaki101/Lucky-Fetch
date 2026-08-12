@@ -24,7 +24,7 @@ The unit and mocked-Chromium suites cover interval conversion/validation, bounde
 
 1. Run `npm run dev`.
 2. Open `http://localhost:5173/test-page/`.
-3. Start a 30-second LuckyFetch monitor for that tab.
+3. Start a 10-second LuckyFetch monitor for that tab.
 4. The page shows a per-tab load counter and load time.
 5. Enter distinctive unsaved text before testing protection.
 
@@ -43,7 +43,8 @@ The page includes regular text, a scroll box, text input, textarea, select, cont
 
 ### Intervals and limits
 
-- Reject blank, zero, negative, non-numeric, under-30-second, and over-30-day values.
+- Reject blank, zero, negative, non-numeric, under-10-second, and over-30-day values.
+- With Reload and Monitor enabled together, accept a monitor delay equal to half the reload interval and reject anything above it.
 - Verify all four presets.
 - With maximum 2, confirm the second accepted reload sets Completed, preserves count 2, and cancels the alarm.
 - Verify Unlimited continues.

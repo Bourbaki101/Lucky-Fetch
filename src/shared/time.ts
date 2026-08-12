@@ -1,6 +1,7 @@
 import {
   MAX_INTERVAL_MS,
-  MIN_INTERVAL_MS
+  MIN_INTERVAL_MS,
+  MONITOR_DELAY_RELOAD_RATIO
 } from "./constants";
 import type { IntervalUnit } from "../types/monitor";
 
@@ -18,6 +19,35 @@ export interface ValidationResult {
 
 export function intervalToMs(value: number, unit: IntervalUnit): number {
   return value * UNIT_MULTIPLIERS[unit];
+}
+
+export function normalizeIntervalMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return MIN_INTERVAL_MS;
+  }
+  return Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, value));
+}
+
+export function getMaxMonitorDelay(intervalMs: number): number {
+  return Math.floor(normalizeIntervalMs(intervalMs) * MONITOR_DELAY_RELOAD_RATIO);
+}
+
+function formatSeconds(ms: number): string {
+  const seconds = ms / 1_000;
+  return Number.isInteger(seconds) ? String(seconds) : String(Number(seconds.toFixed(3)));
+}
+
+export function validateMonitorDelayForReload(
+  intervalMs: number,
+  monitorDelayMs: number,
+  monitorEnabled: boolean
+): string | null {
+  if (!monitorEnabled) return null;
+  const maximumMs = getMaxMonitorDelay(intervalMs);
+  if (!Number.isFinite(monitorDelayMs) || monitorDelayMs > maximumMs) {
+    return `Monitor delay must be ${formatSeconds(maximumMs)} seconds or less with a ${formatSeconds(normalizeIntervalMs(intervalMs))}-second reload interval.`;
+  }
+  return null;
 }
 
 export function validateInterval(
@@ -43,7 +73,7 @@ export function validateInterval(
     return {
       valid: false,
       intervalMs: null,
-      error: "Phase 1 supports intervals of 30 seconds or longer."
+      error: "Minimum reload interval is 10 seconds."
     };
   }
   if (intervalMs > MAX_INTERVAL_MS) {
